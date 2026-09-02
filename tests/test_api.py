@@ -53,13 +53,13 @@ class TimestampModel(unittest.TestCase):
         self.assertEqual(api.timestamp_model("openai", "gpt-4o-transcribe"),
                          "whisper-1")
 
-    def test_openrouter_takes_the_subtitle_model_that_was_set(self):
+    def test_openrouter_takes_the_file_model_that_was_set(self):
         self.assertEqual(
             api.timestamp_model("openrouter", "openai/gpt-4o-transcribe",
                                 "openai/whisper-large-v3"),
             "openai/whisper-large-v3")
 
-    def test_openrouter_with_no_subtitle_model_falls_back_to_whisper(self):
+    def test_openrouter_with_no_file_model_falls_back_to_whisper(self):
         self.assertEqual(api.timestamp_model("openrouter", "openai/gpt-4o-transcribe", ""),
                          "openai/whisper-1")
 
@@ -328,8 +328,8 @@ class TranscribeSegments(DikteTest):
             api.transcribe_segments(OPENROUTER, self.wav)
         self.assertEqual(multipart_fields(calls[0])["model"], "openai/whisper-1")
 
-    def test_openrouter_asks_for_the_subtitle_model_when_one_is_set(self):
-        target = OPENROUTER._replace(subtitle_model="mistralai/voxtral-mini-transcribe")
+    def test_openrouter_asks_for_the_file_model_when_one_is_set(self):
+        target = OPENROUTER._replace(file_model="mistralai/voxtral-mini-transcribe")
         with fake_urlopen(self.reply([{"start": 0, "end": 1, "text": "hi"}])) as calls:
             api.transcribe_segments(target, self.wav)
         self.assertEqual(multipart_fields(calls[0])["model"],
