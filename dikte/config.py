@@ -397,6 +397,9 @@ DEFAULTS = {
     "transcribe_model": "gpt-4o-transcribe",           # used when provider is openai
     "groq_transcribe_model": "whisper-large-v3-turbo",
     "openrouter_transcribe_model": "openai/gpt-4o-transcribe",
+    # What a timestamped run (subtitles) asks OpenRouter for: not every model
+    # there returns segment times. Empty -> openai/whisper-1.
+    "openrouter_subtitle_model": "",
     "language": "tr",
     "transcribe_prompt": "",
 
@@ -669,8 +672,9 @@ class Config:
             # to land on rather than reading it from there.
             name = "openai"
         who = TRANSCRIBERS[name]
+        subtitle = self["openrouter_subtitle_model"] if name == "openrouter" else ""
         return api.Target(name, who.service, self.api_key(who.key),
-                          self[who.url], self[who.model])
+                          self[who.url], self[who.model], subtitle.strip())
 
     def transcribe_ready(self):
         """Whether speech to text could run right now, without opening Settings."""

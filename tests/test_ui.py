@@ -504,6 +504,20 @@ class Settings(DikteTest):
         self.assertEqual(conf["transcribe_model"], "gpt-4o-transcribe")
         self.assertEqual(conf["groq_transcribe_model"], "whisper-large-v3")
 
+    def test_the_subtitle_model_is_saved_and_only_shown_for_openrouter(self):
+        self.write_config({"transcribe_provider": "openrouter",
+                           "openrouter_subtitle_model": "openai/whisper-large-v3"})
+        conf = cfg.Config()
+        window = self.window(conf)
+        self.assertEqual(window.subtitle_model.currentText(), "openai/whisper-large-v3")
+        self.assertTrue(window.stt_form.isRowVisible(window.subtitle_model_row))
+        window.subtitle_model.setCurrentText(" deepgram/nova-3 ")
+        window._save()
+        self.assertEqual(conf["openrouter_subtitle_model"], "deepgram/nova-3")
+        window.transcribe_provider.setCurrentIndex(
+            window.transcribe_provider.findData("openai"))
+        self.assertFalse(window.stt_form.isRowVisible(window.subtitle_model_row))
+
     def test_the_provider_box_offers_every_provider_config_knows(self):
         window = self.window(cfg.Config())
         offered = [window.transcribe_provider.itemData(i)

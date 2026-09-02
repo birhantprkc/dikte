@@ -48,22 +48,33 @@ LOCAL_TIMEOUT = 3600
 
 # Where a transcription request goes; built by config.Config.transcribe_target().
 # `service` is the name the user sees in an error, `provider` the one the code
-# branches on.
-Target = collections.namedtuple("Target", "provider service api_key base_url model")
+# branches on. `subtitle_model` is what a timestamped run asks for instead of
+# `model`, where the two differ; empty means the provider's own whisper.
+Target = collections.namedtuple(
+    "Target", "provider service api_key base_url model subtitle_model",
+    defaults=[""])
+
+# What answers with segment times on OpenRouter when nothing else was chosen.
+OPENROUTER_SUBTITLE_MODEL = "openai/whisper-1"
 
 
-def timestamp_model(provider, selected=""):
+def timestamp_model(provider, selected="", subtitle=""):
     """Which model answers with segment times.
 
-    OpenAI keeps them to whisper-1 and OpenRouter namespaces that id. Everything
-    Groq transcribes with is a whisper, so the model already chosen does it and
-    the fallback is only for a provider left on its default. So is everything the
-    local server runs, whatever the file is called, and there asking for another
-    model would name one it has never heard of.
+    OpenAI keeps them to whisper-1. Everything Groq transcribes with is a
+    whisper, so the model already chosen does it and the fallback is only for a
+    provider left on its default. So is everything the local server runs,
+    whatever the file is called, and there asking for another model would name
+    one it has never heard of. OpenRouter fronts several models that do times
+    and several that do not, and a request to the wrong one gets a transcript
+    with no segments in it, so the one to use is a setting of its own
+    (`subtitle`) and whisper-1 is only where that setting is left empty.
     """
     if provider in ("groq", "local"):
         return selected or "whisper-large-v3-turbo"
-    return "openai/whisper-1" if provider == "openrouter" else "whisper-1"
+    if provider == "openrouter":
+        return subtitle or OPENROUTER_SUBTITLE_MODEL
+    return "whisper-1"
 
 
 # What a gateway in front of the model answers of its own accord: the request
@@ -444,7 +455,8 @@ def transcribe_segments(target, audio_path, language="", prompt="", timeout=300,
                         aborter=None):
     """[(start_seconds, end_seconds, text)] using whisper-1's verbose response."""
     data = _transcribe_request(
-        target._replace(model=timestamp_model(target.provider, target.model)),
+        target._replace(model=timestamp_model(target.provider, target.model,
+                                              target.subtitle_model)),
         audio_path, language, prompt, "verbose_json",
         granularity="segment", timeout=timeout, aborter=aborter,
     )
