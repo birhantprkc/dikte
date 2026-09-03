@@ -221,6 +221,7 @@ class InstallProgram(Local):
 
     def install(self, *names, archive=None):
         self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: False)
         blob = self.archive if archive is None else archive
         with serving(self.release(*names, archive=blob), blob) as calls:
             path = ggml.install_program(ggml.WHISPER)
@@ -237,6 +238,105 @@ class InstallProgram(Local):
         _, urls = self.install("whisper-bin-x64.zip", "whisper-bin-ubuntu-arm64.tar.gz",
                                "whisper-bin-ubuntu-x64.tar.gz")
         self.assertTrue(urls[1].endswith("whisper-bin-ubuntu-x64.tar.gz"))
+
+    def test_linux_x64_with_vulkan_takes_diktes_accelerated_build(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-vulkan-x64.tar.gz")
+        listing["tag_name"] = "whisper.cpp-v1.9.3"
+        managed_sha = hashlib.sha256(self.archive).hexdigest()
+        with mock.patch.object(ggml, "MANAGED_WHISPER_SHA256", managed_sha,
+                               create=True):
+            with fake_urlopen(listing, body(self.archive)) as calls:
+                path = ggml.install_program(ggml.WHISPER)
+        urls = [call.full_url for call in calls]
+        self.assertIn(
+            "/repos/yusufipk/dikte/releases/tags/whisper.cpp-v1.9.3",
+            urls[0],
+        )
+        self.assertTrue(urls[1].endswith(
+            "whisper-bin-ubuntu-vulkan-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual("v1.9.3", ggml.installed_version(ggml.WHISPER))
+
+    def test_an_explicit_whisper_version_still_comes_from_upstream(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(listing, body(self.archive)) as calls:
+            ggml.install_program(ggml.WHISPER, tag="v1.9.1")
+        self.assertIn(
+            "/repos/ggml-org/whisper.cpp/releases/tags/v1.9.1",
+            calls[0].full_url,
+        )
+
+    def test_linux_arm64_keeps_using_the_upstream_cpu_build(self):
+        self.patch_attr(ggml, "_arch", lambda: "arm64")
+        self.patch_attr(ggml.platform, "machine", lambda: "aarch64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-arm64.tar.gz")
+        with fake_urlopen(listing, body(self.archive)) as calls:
+            ggml.install_program(ggml.WHISPER)
+        self.assertIn(
+            "/repos/ggml-org/whisper.cpp/releases/latest",
+            calls[0].full_url,
+        )
+
+    def test_linux_non_x86_does_not_try_the_managed_x64_build(self):
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-arm64.tar.gz")
+        with mock.patch("platform.machine", return_value="ppc64le"):
+            with fake_urlopen(listing, listing) as calls:
+                with self.assertRaises(ggml.LocalError):
+                    ggml.install_program(ggml.WHISPER)
+        self.assertIn(
+            "/repos/ggml-org/whisper.cpp/releases/latest",
+            calls[0].full_url,
+        )
+
+    def test_a_missing_managed_build_falls_back_to_upstream_cpu(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        managed = self.release("Dikte-1.1.0-x86_64.AppImage")
+        managed["tag_name"] = "whisper.cpp-v1.9.3"
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(managed, upstream, body(self.archive)) as calls:
+            path = ggml.install_program(ggml.WHISPER)
+        urls = [call.full_url for call in calls]
+        self.assertIn(
+            "/repos/yusufipk/dikte/releases/tags/whisper.cpp-v1.9.3",
+            urls[0],
+        )
+        self.assertIn("/repos/ggml-org/whisper.cpp/releases/latest", urls[1])
+        self.assertTrue(urls[2].endswith("whisper-bin-ubuntu-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
+
+    def test_a_managed_build_with_an_unreviewed_digest_falls_back(self):
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        managed = self.release("whisper-bin-ubuntu-vulkan-x64.tar.gz")
+        managed["assets"][0]["digest"] = "sha256:" + "0" * 64
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(managed, upstream, body(self.archive)) as calls:
+            try:
+                path = ggml.install_program(ggml.WHISPER)
+            except ggml.LocalError as exc:
+                self.fail(f"unreviewed digest did not fall back: {exc}")
+        urls = [call.full_url for call in calls]
+        self.assertEqual(3, len(urls))
+        self.assertTrue(urls[2].endswith("whisper-bin-ubuntu-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
+
+    def test_an_unavailable_managed_release_falls_back_to_upstream_cpu(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(http_error(404), upstream,
+                          body(self.archive)) as calls:
+            path = ggml.install_program(ggml.WHISPER)
+        self.assertEqual(3, len(calls))
+        self.assertTrue(calls[2].full_url.endswith(
+            "whisper-bin-ubuntu-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
 
     def test_a_release_with_nothing_for_this_machine_says_so(self):
         self.patch_attr(ggml, "_arch", lambda: "x64")
@@ -398,6 +498,18 @@ class InstallProgram(Local):
             tar.addfile(info)
         with self.assertRaises(ggml.LocalError):
             self.install("whisper-bin-ubuntu-x64.tar.gz", archive=buf.getvalue())
+
+    def test_python_without_safe_tar_filters_refuses_the_archive(self):
+        archive = self.path("bundle.tar.gz")
+        archive.write_bytes(self.archive)
+        destination = self.path("unpacked")
+        destination.mkdir()
+        with mock.patch.object(tarfile.TarFile, "extractall",
+                               side_effect=[TypeError("no filter"), None]) as extract:
+            with self.assertRaises(ggml.LocalError) as caught:
+                ggml._extract(archive, destination)
+        self.assertEqual(1, extract.call_count)
+        self.assertIn("safely", str(caught.exception))
 
     def test_everything_is_asked_for_over_tls(self):
         for url in (hub.GITHUB_API, hub.HF_API, hub.HF_FILES):

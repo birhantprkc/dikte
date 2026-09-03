@@ -163,7 +163,10 @@ running.
   the program and the model, verifies the sha256 and refuses a download published
   without one, then keeps a server alive while you dictate. The graphics card is
   reached through CUDA, ROCm or Vulkan where the build allows. No key, no
-  account, nothing leaving the machine.
+  account, nothing leaving the machine. On x86_64 Linux, that same Download
+  button tries the reviewed Vulkan bundle when a loader is present, and falls
+  back to upstream's CPU build if it is unavailable. The bundle also carries CPU
+  backends for systems where a Vulkan device cannot start.
 - **Silence never reaches the API.** Handed near-silence, a transcription model
   invents a sentence instead of returning nothing ("Thanks for watching", or in
   Turkish "Altyazı M.K."). A recording is dropped when nothing rose 10 dB above

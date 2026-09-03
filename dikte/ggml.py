@@ -76,6 +76,13 @@ Program = collections.namedtuple("Program", "name repo binary health")
 
 WHISPER = Program("whisper", "ggml-org/whisper.cpp", "whisper-server", "")
 LLAMA = Program("llama", "ggml-org/llama.cpp", "llama-server", "/health")
+DIKTE_REPO = "yusufipk/dikte"
+MANAGED_WHISPER_RELEASE = "whisper.cpp-v1.9.3"
+MANAGED_WHISPER_VERSION = "v1.9.3"
+MANAGED_WHISPER_VULKAN = "whisper-bin-ubuntu-vulkan-x64.tar.gz"
+MANAGED_WHISPER_SHA256 = (
+    "c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8"
+)
 
 # Where the models are listed. Neither list is written into Dikte: a catalogue
 # in the source means a release of Dikte for every model somebody else
@@ -346,8 +353,11 @@ def _extract(archive, into):
         with tarfile.open(archive, "r:gz") as tar:
             try:
                 tar.extractall(into, filter="data")
-            except TypeError:      # Python without the extraction filters
-                tar.extractall(into)
+            except TypeError as exc:  # Python 3.11.0-3 lack extraction filters
+                raise LocalError(t(
+                    "Could not safely unpack {name} with this Python version",
+                    name=os.path.basename(str(archive)),
+                )) from exc
     except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
         raise LocalError(t("Could not unpack {name}: {error}",
                            name=os.path.basename(str(archive)), error=exc)) from exc
@@ -370,20 +380,42 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
                     refresh=False):
     """Fetch and unpack a release. The path to the binary, or "" when stopped.
 
-    `tag` is empty for whatever the project released last, which is the point:
-    a version pinned in Dikte's source would mean a release of Dikte every time
-    whisper.cpp has one.
+    Ordinary builds follow the program's newest release. The Linux Vulkan build
+    comes from Dikte's pinned dependency release instead.
     """
-    try:
-        tag, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
-    except hub.HubError as exc:
-        raise LocalError(str(exc)) from exc
-
+    repo = program.repo
+    release_tag = tag or "latest"
+    managed = (not tag and program is WHISPER and sys.platform == "linux"
+               and platform.machine().lower() in ("x86_64", "amd64")
+               and _has_vulkan())
     item = None
-    for ending in _wanted_assets(program):
-        item = next((a for a in assets if a.name.endswith(ending)), None)
+    if managed:
+        repo = DIKTE_REPO
+        release_tag = MANAGED_WHISPER_RELEASE
+        try:
+            tag, assets = hub.release(repo, release_tag, refresh=refresh)
+        except hub.HubError:
+            # Older Dikte releases have no managed server. The upstream CPU
+            # build remains the usable answer there and during API failures.
+            assets = []
+        item = next((a for a in assets
+                     if a.name.endswith(MANAGED_WHISPER_VULKAN)
+                     and a.sha256 == MANAGED_WHISPER_SHA256), None)
         if item:
-            break
+            tag = MANAGED_WHISPER_VERSION
+
+    if item is None:
+        repo = program.repo
+        wanted = _wanted_assets(program)
+        try:
+            tag, assets = hub.release(repo, "latest" if managed else release_tag,
+                                      refresh=refresh)
+        except hub.HubError as exc:
+            raise LocalError(str(exc)) from exc
+        for ending in wanted:
+            item = next((a for a in assets if a.name.endswith(ending)), None)
+            if item:
+                break
     if item is None:
         # Nothing to download and nothing to install for you: whisper.cpp
         # publishes no macOS binary, and Homebrew's whisper-cpp is configured
@@ -398,7 +430,7 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
                 "or transcribe in the cloud. See the README."
             ))
         raise LocalError(t("{repo} {tag} has no build for this machine.",
-                           repo=program.repo, tag=tag))
+                           repo=repo, tag=tag))
 
     into = BIN_DIR / program.name / tag
     fresh = into.with_name(tag + ".new")
