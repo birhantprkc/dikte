@@ -21,7 +21,8 @@ WORKFLOW = ROOT / ".github" / "workflows" / "whisper-vulkan.yml"
 
 
 class WhisperVulkanPackaging(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("bash"), "bash is unavailable")
+    @unittest.skipUnless(sys.platform != "win32" and shutil.which("bash"),
+                         "bash syntax check is unavailable")
     def test_the_release_scripts_parse_as_shell(self):
         for name in ("build-package.sh", "validate-package.sh",
                      "smoke-runtime.sh"):
@@ -108,6 +109,7 @@ class WhisperVulkanPackaging(unittest.TestCase):
         self.assertIn("libvulkan-dev=", dockerfile)
         self.assertIn("shaderc=", dockerfile)
         key = (PACKAGING / "lunarg-signing-key-pub.asc").read_bytes()
+        key = key.replace(b"\r\n", b"\n")
         self.assertEqual(
             "aa1c3c29673140e77f0d6a9aaeed5d9b5621e305ead51c59fae4458bbb4df92b",
             hashlib.sha256(key).hexdigest(),

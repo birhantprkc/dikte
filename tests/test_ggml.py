@@ -205,6 +205,7 @@ class InstallProgram(Local):
         # These fixtures are Ubuntu release archives.  Keep checking that path
         # on every host, including the Mac that checks the macOS backend.
         self.patch_attr(sys, "platform", "linux")
+        self.patch_attr(ggml.platform, "machine", lambda: "x86_64")
         # Built once, because the release listing has to publish its checksum
         # and a tarball is not the same bytes twice.
         self.archive = tarball({
