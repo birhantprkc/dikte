@@ -6,7 +6,7 @@ import shutil
 import sys
 import threading
 
-from PyQt6.QtCore import QEvent, QObject, QRect, Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QRect, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDialog,
@@ -247,6 +247,13 @@ class LocalModelBox(QGroupBox):
         self._pending = False
         self._stop = False
         self._wanted = ""              # the model to select once a list arrives
+        self._chosen_in = ""           # the publisher the selected model is from
+        # Typing or arrowing through the publisher box changes its text a
+        # character at a time, and each of those would otherwise be a request.
+        self._later = QTimer(self)
+        self._later.setSingleShot(True)
+        self._later.setInterval(400)
+        self._later.timeout.connect(self._later_fetch)
 
         form = QFormLayout(self)
 
@@ -328,6 +335,8 @@ class LocalModelBox(QGroupBox):
         self._wanted = model
         self._pending = True
         self._show_program()
+        self._chosen_in = repo or (ggml.SUGGESTED_LLM[0] if self._repos is not None
+                                   else "")
         if self._repos is not None:
             self.repo.blockSignals(True)
             self.repo.clear()
@@ -367,11 +376,18 @@ class LocalModelBox(QGroupBox):
 
     def _fill_repos(self, current):
         def work():
-            self._listed.emit([("repos", ggml.llm_repos())], "")
+            self._listed.emit([("repos", ggml.llm_repos(), "")], "")
 
         threading.Thread(target=work, daemon=True).start()
 
     def _repo_changed(self):
+        if not self._downloading:
+            self._later.start()
+
+    def _later_fetch(self):
+        # A download that started inside the wait was not there to be seen when
+        # the timer went off, and rebuilding the rows underneath one is exactly
+        # what the guard above is for.
         if not self._downloading:
             self._fetch_models(self.repository())
 
@@ -381,18 +397,29 @@ class LocalModelBox(QGroupBox):
         def work():
             try:
                 found = self._models(repo) if self._repos is not None else self._models()
-                self._listed.emit([("models", found)], "")
+                self._listed.emit([("models", found, repo)], "")
             except ggml.LocalError as exc:
-                self._listed.emit([], str(exc))
+                self._listed.emit([("models", [], repo)], str(exc))
 
         threading.Thread(target=work, daemon=True).start()
 
     def _on_listed(self, payload, error):
-        if error:
-            self.status.setText(error)
-            self._refresh_buttons()
+        kind, found, repo = payload[0] if payload else ("repos", [], "")
+        # A publisher changed while its predecessor's list was still on the way
+        # would otherwise be answered with the wrong models, whichever request
+        # happened to come back last.
+        if kind == "models" and repo != self.repository():
             return
-        kind, found = payload[0]
+        if error:
+            # The list is the publisher's, so a failed one leaves the box no
+            # longer showing this publisher's models: emptying it is what keeps
+            # the two boxes saying the same thing. The message goes on after,
+            # because filling the box writes a status of its own.
+            if kind == "models":
+                self._fill_models([])
+            self._refresh_buttons()
+            self.status.setText(error)
+            return
         if kind == "repos":
             current = self.repo.currentText()
             self.repo.blockSignals(True)
@@ -406,7 +433,12 @@ class LocalModelBox(QGroupBox):
 
     def _fill_models(self, items):
         """One row per model, saying what it weighs and whether it is here."""
-        wanted = self._wanted or self.selected()
+        # The selection is only worth carrying over within the publisher it was
+        # made in. Carried across one, a model this repository does not publish
+        # would be added back as "not downloaded" and selected again, and
+        # changing the publisher would leave the model box looking untouched.
+        same = self._repos is None or self.repository() == self._chosen_in
+        wanted = self._wanted or (self.selected() if same else "")
         here = [name for name in (self._model_path(i.name).name for i in items)]
         self.model.blockSignals(True)
         self.model.clear()
@@ -431,6 +463,7 @@ class LocalModelBox(QGroupBox):
         self.model.blockSignals(False)
         self._fit_popup(self.model)
         self._wanted = ""
+        self._chosen_in = self.repository()
         self._model_changed()
 
     def _on_disk(self):
@@ -459,6 +492,9 @@ class LocalModelBox(QGroupBox):
         self._show_program()
         if error:
             self.program_label.setText(error)
+        # The model line says whether the program is here, so installing one
+        # changes what it should read.
+        self._refresh_buttons()
         self.changed.emit()
 
     def _current_item(self):
@@ -545,15 +581,30 @@ class LocalModelBox(QGroupBox):
     def _refresh_buttons(self):
         name = self.selected()
         here = bool(name) and ggml.have_model(self._model_path(name))
+        # A row carries what it takes to fetch it. The ones that do not are the
+        # models found on this disk and the one the settings name but the list
+        # does not offer: there is nothing to press Download for on those, and
+        # a button that can only do nothing is worse than one that is out.
+        item = self._current_item()
         self.delete_button.setEnabled(here and not self._downloading)
         self.download_button.setText(t("Stop") if self._downloading else t("Download"))
-        self.download_button.setEnabled(self._downloading or (bool(name) and not here))
+        self.download_button.setEnabled(self._downloading or (item is not None
+                                                              and not here))
         if self._downloading:
             return
         if not name:
             self.status.setText(t("Nothing downloaded yet."))
+        elif here and not ggml.program_path(self.program):
+            # The model alone runs nothing, and "Ready" over a missing program
+            # reads as though it does.
+            self.status.setText(t("{name} is here, but the program above is "
+                                  "not. Download it first.", name=name))
         elif here:
             self.status.setText(t("Ready: {name}.", name=name))
+        elif item is None:
+            self.status.setText(t("{name} is not on this machine and this "
+                                  "publisher does not offer it. Choose another "
+                                  "model, or another publisher.", name=name))
         else:
             self.status.setText(t("{name} has not been downloaded yet.", name=name))
 

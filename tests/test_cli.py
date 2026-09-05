@@ -9,6 +9,7 @@ socket is faked, and everything that runs locally runs for real.
 import contextlib
 import io
 import json
+import sys
 import unittest
 import webbrowser
 from typing import ClassVar
@@ -668,7 +669,11 @@ class WithoutAnInstance(DikteTest):
     def run_verb(self, argv):
         # launch_gui replaces this process with the application, so it never
         # comes back in real use and must not be allowed to here.
+        # `ask` with no text reads what was piped in, and the runner's own
+        # stdin is not that: under pytest it is an object that refuses to be
+        # read at all.
         with mock.patch.object(ipc, "send", return_value=None), \
+                mock.patch.object(sys, "stdin", io.StringIO()), \
                 mock.patch.object(cli, "launch_gui") as launch, \
                 captured() as (out, err):
             code = cli.run(argv)

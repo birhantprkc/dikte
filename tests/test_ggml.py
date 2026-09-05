@@ -238,6 +238,45 @@ class InstallProgram(Local):
                                "whisper-bin-ubuntu-x64.tar.gz")
         self.assertTrue(urls[1].endswith("whisper-bin-ubuntu-x64.tar.gz"))
 
+    def test_the_nightly_pointer_is_followed_to_where_the_builds_are(self):
+        """llama.cpp's latest release carries a tag name, not the binaries."""
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: False)
+        marker = self.release(ggml.NIGHTLY_TAG)
+        nightly = dict(self.release("llama-b10809-bin-ubuntu-x64.tar.gz"),
+                       tag_name="b10809")
+
+        def opener(request, timeout=None):
+            url = request.full_url
+            if url.endswith("/releases/latest"):
+                return json_body(marker)
+            if url.endswith("/releases/tags/b10809"):
+                return json_body(nightly)
+            if url.endswith(ggml.NIGHTLY_TAG):
+                return body(b"b10809\n")
+            return body(self.archive)
+
+        with mock.patch("urllib.request.urlopen", side_effect=opener):
+            tag, found = ggml._pick_asset(ggml.LLAMA)
+        self.assertEqual(tag, "b10809")
+        self.assertEqual(found.name, "llama-b10809-bin-ubuntu-x64.tar.gz")
+
+    def test_without_a_pointer_the_newest_release_that_has_a_build_is_taken(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: False)
+        marker = self.release("source.zip")
+        listing = [dict(self.release("llama-b2-bin-win-cpu-x64.zip"), tag_name="b2"),
+                   dict(self.release("llama-b1-bin-ubuntu-x64.tar.gz"), tag_name="b1")]
+
+        def opener(request, timeout=None):
+            url = request.full_url
+            return json_body(listing if "per_page" in url else marker)
+
+        with mock.patch("urllib.request.urlopen", side_effect=opener):
+            tag, found = ggml._pick_asset(ggml.LLAMA)
+        self.assertEqual(tag, "b1")
+        self.assertEqual(found.name, "llama-b1-bin-ubuntu-x64.tar.gz")
+
     def test_a_release_with_nothing_for_this_machine_says_so(self):
         self.patch_attr(ggml, "_arch", lambda: "x64")
         with fake_urlopen(self.release("whisper-bin-Win32.zip")):

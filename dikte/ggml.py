@@ -83,6 +83,10 @@ LLAMA = Program("llama", "ggml-org/llama.cpp", "llama-server", "/health")
 WHISPER_MODELS_REPO = "ggerganov/whisper.cpp"
 LLM_AUTHOR = "ggml-org"
 
+# The file llama.cpp attaches to its version releases in place of the binaries:
+# a line naming the nightly tag those are published under.
+NIGHTLY_TAG = "nightly-tag.txt"
+
 # What the whisper repository holds besides models: Core ML encoders for Apple
 # hardware and the odd loose file.
 WHISPER_PREFIX = "ggml-"
@@ -277,6 +281,65 @@ def _wanted_assets(program):
     return (f"bin-ubuntu-{arch}.tar.gz",)
 
 
+def _matching_asset(program, assets):
+    """The archive this machine wants out of one release's files, or None."""
+    for ending in _wanted_assets(program):
+        item = next((a for a in assets if a.name.endswith(ending)), None)
+        if item:
+            return item
+    return None
+
+
+def _pick_asset(program, tag="", refresh=False):
+    """(tag, Item) for the release archive to install. Item is None when there
+    is none for this machine.
+
+    A named tag is taken as given. For the newest, what GitHub answers is not
+    always where the builds are: llama.cpp's latest release is a version marker
+    carrying a single nightly-tag.txt, which names the tag the archives are
+    actually attached to, and those are prereleases that "latest" never points
+    at. The pointer is followed when it is there, and when it is not, the newest
+    release that does carry a build for this machine is taken instead.
+    """
+    named = bool(tag) and tag != "latest"
+    missing = None
+    try:
+        tag, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
+    except hub.HubError as exc:
+        # A release carrying no files at all is the case the search below exists
+        # for, not a reason to stop before it: the build for this machine may be
+        # attached to a prerelease that "latest" never points at. The failure is
+        # kept rather than dropped, because an unreachable GitHub arrives here
+        # the same way and that one is the message the caller wants.
+        if named:
+            raise
+        missing, assets = exc, []
+    item = _matching_asset(program, assets)
+    if item or named:
+        return tag, item
+    # Best effort from here on: a machine this project publishes nothing for is
+    # not a failed lookup, and the caller's message about that is the useful
+    # one. Whatever goes wrong while looking further leaves it standing.
+    try:
+        pointer = next((a for a in assets if a.name == NIGHTLY_TAG), None)
+        if pointer:
+            nightly = hub.text(pointer.url).strip()
+            if nightly:
+                found, assets = hub.release(program.repo, nightly, refresh=refresh)
+                item = _matching_asset(program, assets)
+                if item:
+                    return found, item
+        for found, assets in hub.releases(program.repo, refresh=refresh):
+            item = _matching_asset(program, assets)
+            if item:
+                return found, item
+    except hub.HubError:
+        pass
+    if missing is not None:
+        raise missing
+    return tag, None
+
+
 def _install_record(program):
     return BIN_DIR / program.name / "installed.json"
 
@@ -375,15 +438,10 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
     whisper.cpp has one.
     """
     try:
-        tag, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
+        tag, item = _pick_asset(program, tag, refresh=refresh)
     except hub.HubError as exc:
         raise LocalError(str(exc)) from exc
 
-    item = None
-    for ending in _wanted_assets(program):
-        item = next((a for a in assets if a.name.endswith(ending)), None)
-        if item:
-            break
     if item is None:
         # Nothing to download and nothing to install for you: whisper.cpp
         # publishes no macOS binary, and Homebrew's whisper-cpp is configured
