@@ -228,6 +228,11 @@ TR = {
     "Transcript cleanup": "Transkripti temizleme",
     "API key": "API anahtarı",
     "Model": "Model",
+    "Audio file model": "Ses dosyası modeli",
+    "The model a timestamped audio file (subtitles) is sent to. Not every model on "
+    "OpenRouter returns segment times; empty means openai/whisper-1.":
+        "Zaman damgalı bir ses dosyasının (altyazı) gönderildiği model. OpenRouter'daki her "
+        "model segment zamanı döndürmez; boşsa openai/whisper-1 kullanılır.",
     "Provider": "Sağlayıcı",
     "sk-… (falls back to OPENAI_API_KEY)": "sk-… (boşsa OPENAI_API_KEY kullanılır)",
     "gsk_… (falls back to GROQ_API_KEY)": "gsk_… (boşsa GROQ_API_KEY kullanılır)",

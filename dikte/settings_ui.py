@@ -864,6 +864,15 @@ class SettingsWindow(QDialog):
         self.transcribe_model_row = self._row(self.transcribe_model,
                                               self.refresh_transcribe_models)
         stt_form.addRow(t("Model"), self.transcribe_model_row)
+        # OpenRouter only: which of its models a timestamped run asks for.
+        self.file_model = QComboBox()
+        self.file_model.setEditable(True)
+        self.file_model.lineEdit().setPlaceholderText(api.OPENROUTER_FILE_MODEL)
+        self.file_model.setToolTip(
+            t("The model a timestamped audio file (subtitles) is sent to. Not every model "
+              "on OpenRouter returns segment times; empty means openai/whisper-1."))
+        self.file_model_row = self._row(self.file_model)
+        stt_form.addRow(t("Audio file model"), self.file_model_row)
         # A spanning row: in the narrow field column a wrapped label gets a
         # height that fits one line, and the rest of the text is cut off.
         self.transcribe_status = QLabel("")
@@ -1747,6 +1756,7 @@ class SettingsWindow(QDialog):
         self._shown_provider = ""
         self._select_data(self.transcribe_provider, conf["transcribe_provider"])
         self._provider_changed()  # selecting index 0 fires no signal
+        self.file_model.setCurrentText(conf["openrouter_file_model"])
         self.local_gpu.setChecked(conf["local_gpu"])
         self.local_preload.setChecked(conf["local_preload"])
         self.local_threads.setValue(int(conf["local_threads"]))
@@ -1864,6 +1874,7 @@ class SettingsWindow(QDialog):
         for name, who in cfg.TRANSCRIBERS.items():
             conf[who.key] = self._key_fields[name].text().strip()
             conf[who.model] = self._models[name].strip() or cfg.DEFAULTS[who.model]
+        conf["openrouter_file_model"] = self.file_model.currentText().strip()
         conf["gemini_api_key"] = self.gemini_key.text().strip()
         conf["opencode_api_key"] = self.opencode_key.text().strip()
         conf["local_model"] = self.local_whisper.selected()
@@ -2037,6 +2048,7 @@ class SettingsWindow(QDialog):
         self._shown_provider = provider
         local = provider == "local"
         self.stt_form.setRowVisible(self.transcribe_model_row, not local)
+        self.stt_form.setRowVisible(self.file_model_row, provider == "openrouter")
         self.stt_form.setRowVisible(self.transcribe_status, not local)
         self.stt_form.setRowVisible(self.local_whisper, local)
         self.stt_form.setRowVisible(self.local_options, local)
@@ -2045,7 +2057,15 @@ class SettingsWindow(QDialog):
         self.transcribe_model.clear()
         self.transcribe_model.addItems(TRANSCRIBE_MODELS[provider])
         self.transcribe_model.setCurrentText(self._models[provider])
+        if provider == "openrouter":
+            self._fill_file_models(TRANSCRIBE_MODELS[provider])
         self.transcribe_status.setText("")
+
+    def _fill_file_models(self, models):
+        current = self.file_model.currentText()
+        self.file_model.clear()
+        self.file_model.addItems(models)
+        self.file_model.setCurrentText(current)
 
     def _load_transcribe_models(self):
         """The model list of whichever provider is selected."""
@@ -2075,6 +2095,8 @@ class SettingsWindow(QDialog):
         self.transcribe_model.clear()
         self.transcribe_model.addItems(models)
         self.transcribe_model.setCurrentText(current)
+        if self._shown_provider == "openrouter":
+            self._fill_file_models(models)
         self.transcribe_status.setText(t("{count} models loaded.", count=len(models)))
 
     def _load_models(self):

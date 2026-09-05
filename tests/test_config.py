@@ -220,6 +220,19 @@ class TranscribeTarget(DikteTest):
         self.assertEqual(target.service, "OpenRouter")
         self.assertEqual(target.api_key, "sk-or-test")
         self.assertEqual(target.model, "openai/whisper-1")
+        self.assertEqual(target.file_model, "")
+
+    def test_openrouter_carries_its_file_model(self):
+        conf = self.config(transcribe_provider="openrouter",
+                           openrouter_api_key="sk-or-test",
+                           openrouter_file_model=" openai/whisper-large-v3 ")
+        self.assertEqual(conf.transcribe_target().file_model,
+                         "openai/whisper-large-v3")
+
+    def test_only_openrouter_has_a_file_model(self):
+        conf = self.config(transcribe_provider="openai", openai_api_key="sk-test",
+                           openrouter_file_model="openai/whisper-large-v3")
+        self.assertEqual(conf.transcribe_target().file_model, "")
 
     def test_groq_when_it_is_picked(self):
         conf = self.config(transcribe_provider="groq", groq_api_key="gsk-test",
