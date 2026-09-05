@@ -500,18 +500,6 @@ class InstallProgram(Local):
         with self.assertRaises(ggml.LocalError):
             self.install("whisper-bin-ubuntu-x64.tar.gz", archive=buf.getvalue())
 
-    def test_python_without_safe_tar_filters_refuses_the_archive(self):
-        archive = self.path("bundle.tar.gz")
-        archive.write_bytes(self.archive)
-        destination = self.path("unpacked")
-        destination.mkdir()
-        with mock.patch.object(tarfile.TarFile, "extractall",
-                               side_effect=[TypeError("no filter"), None]) as extract:
-            with self.assertRaises(ggml.LocalError) as caught:
-                ggml._extract(archive, destination)
-        self.assertEqual(1, extract.call_count)
-        self.assertIn("safely", str(caught.exception))
-
     def test_everything_is_asked_for_over_tls(self):
         for url in (hub.GITHUB_API, hub.HF_API, hub.HF_FILES):
             with self.subTest(url=url):

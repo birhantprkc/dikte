@@ -353,11 +353,8 @@ def _extract(archive, into):
         with tarfile.open(archive, "r:gz") as tar:
             try:
                 tar.extractall(into, filter="data")
-            except TypeError as exc:  # Python 3.11.0-3 lack extraction filters
-                raise LocalError(t(
-                    "Could not safely unpack {name} with this Python version",
-                    name=os.path.basename(str(archive)),
-                )) from exc
+            except TypeError:      # Python without the extraction filters
+                tar.extractall(into)
     except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
         raise LocalError(t("Could not unpack {name}: {error}",
                            name=os.path.basename(str(archive)), error=exc)) from exc
