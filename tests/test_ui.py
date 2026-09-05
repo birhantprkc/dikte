@@ -8,6 +8,7 @@ next time anybody presses Save. That is the failure this catches.
 
 import os
 import sys
+import time
 import unittest
 from typing import ClassVar
 from unittest import mock
@@ -21,6 +22,7 @@ from dikte import cleanup
 from dikte import config as cfg
 from dikte import ggml
 from dikte import hotkey
+from dikte import hub
 from dikte import ipc
 from dikte import overlay as overlay_module
 from dikte import paste
@@ -1213,6 +1215,75 @@ class LocalModels(DikteTest):
         widest = max(box.repo.fontMetrics().horizontalAdvance(box.repo.itemText(row))
                      for row in range(box.repo.count()))
         self.assertGreaterEqual(view.minimumWidth(), widest)
+
+    @staticmethod
+    def _item(name, size=1 << 20):
+        return hub.Item(name, f"https://example.invalid/{name}", size, "")
+
+    def test_a_row_with_nothing_to_fetch_does_not_offer_a_download(self):
+        # The model the settings name is not in the list any more, so its row
+        # was rebuilt from the name alone and carries no file to fetch. The
+        # button stayed lit and the press did nothing at all.
+        box = self.window(self.config(local_llm_model="gone.gguf")).local_llm
+        box.load("gone.gguf", "ggml-org/SmolLM3-3B-GGUF")
+        self.assertEqual(box.selected(), "gone.gguf")
+        self.assertFalse(box.download_button.isEnabled())
+        self.assertIn("gone.gguf", box.status.text())
+        self.assertIn("publisher", box.status.text())
+
+    def test_a_model_without_its_program_does_not_say_it_is_ready(self):
+        # The model runs on the program above it, and "Ready" over a missing
+        # one is what had people asking why nothing transcribed.
+        box = self.window(cfg.Config()).local_whisper
+        path = ggml.whisper_model_path("ggml-small.bin")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not really a model")
+        box.load("ggml-small.bin")
+        self.assertFalse(ggml.program_path(ggml.WHISPER))
+        self.assertNotIn("Ready", box.status.text())
+        self.assertIn("program", box.status.text())
+
+    def test_changing_the_publisher_changes_the_model(self):
+        # The model chosen under the old publisher is not published by the new
+        # one. Carried over, it was added back as "not downloaded" and selected
+        # again, and the box looked as though the change had not taken.
+        box = self.window(self.config(local_llm_model="gemma-3-4b-it-Q4_K_M.gguf",
+                                      local_llm_repo="ggml-org/gemma-3-4b-it-GGUF")).local_llm
+        box.load("gemma-3-4b-it-Q4_K_M.gguf", "ggml-org/gemma-3-4b-it-GGUF")
+        box.repo.blockSignals(True)
+        box.repo.setCurrentText("ggml-org/SmolLM3-3B-GGUF")
+        box.repo.blockSignals(False)
+        box._on_listed([("models", [self._item("SmolLM3-Q4_K_M.gguf")],
+                         "ggml-org/SmolLM3-3B-GGUF")], "")
+        self.assertEqual(box.selected(), "SmolLM3-Q4_K_M.gguf")
+        self.assertEqual(box.model.count(), 1)
+
+    def test_a_list_for_a_publisher_that_is_no_longer_chosen_is_dropped(self):
+        # Every change starts its own request, and they do not come back in the
+        # order they went out.
+        box = self.window(cfg.Config()).local_llm
+        box.load("", "ggml-org/SmolLM3-3B-GGUF")
+        box.repo.blockSignals(True)
+        box.repo.setCurrentText("ggml-org/SmolLM3-3B-GGUF")
+        box.repo.blockSignals(False)
+        box._on_listed([("models", [self._item("SmolLM3-Q4_K_M.gguf")],
+                         "ggml-org/SmolLM3-3B-GGUF")], "")
+        box._on_listed([("models", [self._item("gemma-3-4b-it-Q4_K_M.gguf")],
+                         "ggml-org/gemma-3-4b-it-GGUF")], "")
+        self.assertEqual(box.selected(), "SmolLM3-Q4_K_M.gguf")
+
+    def test_the_publisher_box_is_not_asked_on_every_keystroke(self):
+        box = self.window(cfg.Config()).local_llm
+        with mock.patch.object(box, "_fetch_models") as fetch:
+            for text in ("g", "gg", "ggm", "ggml-org/SmolLM3-3B-GGUF"):
+                box.repo.setCurrentText(text)
+            fetch.assert_not_called()
+            box._later.setInterval(0)
+            box._later.start()
+            _app.processEvents()
+            time.sleep(0.05)
+            _app.processEvents()
+        self.assertEqual(fetch.call_count, 1)
 
     def test_only_the_chosen_transcriber_is_on_screen(self):
         window = self.window(self.config(transcribe_provider="openai"))
