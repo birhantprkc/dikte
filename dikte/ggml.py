@@ -76,6 +76,13 @@ Program = collections.namedtuple("Program", "name repo binary health")
 
 WHISPER = Program("whisper", "ggml-org/whisper.cpp", "whisper-server", "")
 LLAMA = Program("llama", "ggml-org/llama.cpp", "llama-server", "/health")
+DIKTE_REPO = "yusufipk/dikte"
+MANAGED_WHISPER_RELEASE = "whisper.cpp-v1.9.3"
+MANAGED_WHISPER_VERSION = "v1.9.3"
+MANAGED_WHISPER_VULKAN = "whisper-bin-ubuntu-vulkan-x64.tar.gz"
+MANAGED_WHISPER_SHA256 = (
+    "c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8"
+)
 
 # Where the models are listed. Neither list is written into Dikte: a catalogue
 # in the source means a release of Dikte for every model somebody else
@@ -281,6 +288,35 @@ def _wanted_assets(program):
     return (f"bin-ubuntu-{arch}.tar.gz",)
 
 
+def _managed_whisper(program, tag=""):
+    """Whether this machine is one Dikte publishes its own whisper-server for.
+
+    Linux x86_64 with a Vulkan loader on it, and no version asked for by hand:
+    a pinned version is upstream's to answer.
+    """
+    return (not tag and program is WHISPER and sys.platform == "linux"
+            and platform.machine().lower() in ("x86_64", "amd64")
+            and _has_vulkan())
+
+
+def _managed_asset(refresh=False):
+    """The Vulkan whisper-server Dikte builds itself, or None.
+
+    Taken only when the archive's digest is the reviewed one. Anything else,
+    a release that is not there yet, a GitHub that cannot be reached, a file
+    that is not the reviewed bytes, leaves upstream's processor build as the
+    answer, and the install record says which of the two landed.
+    """
+    try:
+        _, assets = hub.release(DIKTE_REPO, MANAGED_WHISPER_RELEASE,
+                                refresh=refresh)
+    except hub.HubError:
+        return None
+    return next((a for a in assets
+                 if a.name.endswith(MANAGED_WHISPER_VULKAN)
+                 and a.sha256 == MANAGED_WHISPER_SHA256), None)
+
+
 def _matching_asset(program, assets):
     """The archive this machine wants out of one release's files, or None."""
     for ending in _wanted_assets(program):
@@ -294,6 +330,10 @@ def _pick_asset(program, tag="", refresh=False):
     """(tag, Item) for the release archive to install. Item is None when there
     is none for this machine.
 
+    Dikte's own Vulkan whisper-server comes before upstream's where this
+    machine is one it is built for, because whisper.cpp publishes no Vulkan
+    archive for Linux at all.
+
     A named tag is taken as given. For the newest, what GitHub answers is not
     always where the builds are: llama.cpp's latest release is a version marker
     carrying a single nightly-tag.txt, which names the tag the archives are
@@ -301,6 +341,10 @@ def _pick_asset(program, tag="", refresh=False):
     at. The pointer is followed when it is there, and when it is not, the newest
     release that does carry a build for this machine is taken instead.
     """
+    if _managed_whisper(program, tag):
+        item = _managed_asset(refresh=refresh)
+        if item:
+            return MANAGED_WHISPER_VERSION, item
     named = bool(tag) and tag != "latest"
     missing = None
     try:
@@ -361,6 +405,21 @@ def installed_program(program):
 
 def installed_version(program):
     return _read_record(program).get("tag") or ""
+
+
+def vulkan_missing(program):
+    """Whether what Dikte installed is the processor build on a machine the
+    Vulkan one was fetched for.
+
+    The Vulkan whisper-server is a release of Dikte's own, published by hand
+    once the reviewed archive is built, and the install falls back to the
+    upstream processor build whenever that release, the file in it, or its
+    reviewed digest is not there. Nothing is wrong with the fallback except
+    that it is invisible: a graphics card sitting idle looks exactly like a
+    graphics card being used.
+    """
+    return (bool(installed_program(program))
+            and _read_record(program).get("backend") == "processor")
 
 
 def program_path(program, custom=""):
@@ -435,8 +494,10 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
 
     `tag` is empty for whatever the project released last, which is the point:
     a version pinned in Dikte's source would mean a release of Dikte every time
-    whisper.cpp has one.
+    whisper.cpp has one. The Linux Vulkan whisper-server is the exception, and
+    _pick_asset says why.
     """
+    managed = _managed_whisper(program, tag)
     try:
         tag, item = _pick_asset(program, tag, refresh=refresh)
     except hub.HubError as exc:
@@ -505,8 +566,15 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
         # Found under the sibling, run from the final directory.
         binary = into / binary.relative_to(fresh)
         # Written last, so the record never points at anything half-made.
-        _install_record(program).write_text(
-            json.dumps({"tag": tag, "binary": str(binary)}), encoding="utf-8")
+        record = {"tag": tag, "binary": str(binary)}
+        if managed:
+            # Which of the two builds this machine ended up with. Only written
+            # where both were on offer, so an install that never had the
+            # choice is not made to look like a fallback.
+            record["backend"] = (
+                "vulkan" if item.name.endswith(MANAGED_WHISPER_VULKAN)
+                else "processor")
+        _install_record(program).write_text(json.dumps(record), encoding="utf-8")
     except OSError as exc:
         raise LocalError(t("Could not install {name}: {error}",
                            name=program.name, error=exc)) from exc

@@ -6,6 +6,7 @@ save, so a setting added to one half and not the other is silently reset the
 next time anybody presses Save. That is the failure this catches.
 """
 
+import json
 import os
 import sys
 import time
@@ -28,6 +29,7 @@ from dikte import overlay as overlay_module
 from dikte import paste
 from dikte import settings_ui
 from dikte import update
+from dikte.i18n import t
 from tests.support import DikteTest, only_these_tools
 
 # The harness below replaces this method on the class so that opening a window
@@ -1298,6 +1300,54 @@ class LocalModels(DikteTest):
             time.sleep(0.05)
             _app.processEvents()
         self.assertEqual(fetch.call_count, 1)
+    def test_a_processor_build_where_the_vulkan_one_belongs_says_so(self):
+        # The Vulkan whisper-server is published by hand, and until it is
+        # there the download lands upstream's processor build. Said nowhere,
+        # an idle graphics card looks exactly like one that is being used.
+        binary = self.path("bin/whisper/v1.9.3/whisper-server")
+        binary.parent.mkdir(parents=True)
+        binary.write_text("")
+        binary.chmod(0o755)
+        self.path("bin/whisper/installed.json").write_text(json.dumps(
+            {"tag": "v1.9.3", "binary": str(binary), "backend": "processor"}))
+        # A whisper-server on this machine's PATH would win over the download.
+        self.patch_attr(ggml.shutil, "which", lambda name: None)
+        label = self.window(cfg.Config()).local_whisper.program_label.text()
+        self.assertIn("v1.9.3", label)
+        self.assertIn("Vulkan", label)
+
+    def test_an_ordinary_install_is_reported_without_a_word_about_vulkan(self):
+        binary = self.path("bin/whisper/v1.9.3/whisper-server")
+        binary.parent.mkdir(parents=True)
+        binary.write_text("")
+        binary.chmod(0o755)
+        self.path("bin/whisper/installed.json").write_text(json.dumps(
+            {"tag": "v1.9.3", "binary": str(binary)}))
+        self.patch_attr(ggml.shutil, "which", lambda name: None)
+        label = self.window(cfg.Config()).local_whisper.program_label.text()
+        self.assertIn("v1.9.3", label)
+        self.assertNotIn("Vulkan", label)
+
+    def test_a_downloaded_program_can_still_be_asked_for_again(self):
+        # The button used to disappear the moment anything landed, which left
+        # no way to pick up a newer whisper.cpp, or the Vulkan build on a
+        # machine whose driver was installed after Dikte was.
+        binary = self.path("bin/whisper/v1.9.3/whisper-server")
+        binary.parent.mkdir(parents=True)
+        binary.write_text("")
+        binary.chmod(0o755)
+        self.path("bin/whisper/installed.json").write_text(json.dumps(
+            {"tag": "v1.9.3", "binary": str(binary)}))
+        self.patch_attr(ggml.shutil, "which", lambda name: None)
+        box = self.window(cfg.Config()).local_whisper
+        self.assertTrue(box.install_button.isVisibleTo(box))
+        self.assertEqual(box.install_button.text(), t("Download again"))
+
+    def test_a_system_copy_is_not_offered_for_download(self):
+        # Nothing Dikte downloads would be run while one is on the PATH.
+        self.patch_attr(ggml.shutil, "which", lambda name: "/usr/bin/" + name)
+        box = self.window(cfg.Config()).local_whisper
+        self.assertFalse(box.install_button.isVisibleTo(box))
 
     def test_only_the_chosen_transcriber_is_on_screen(self):
         window = self.window(self.config(transcribe_provider="openai"))
