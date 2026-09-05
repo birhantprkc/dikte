@@ -6,6 +6,7 @@ save, so a setting added to one half and not the other is silently reset the
 next time anybody presses Save. That is the failure this catches.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -1213,6 +1214,34 @@ class LocalModels(DikteTest):
         widest = max(box.repo.fontMetrics().horizontalAdvance(box.repo.itemText(row))
                      for row in range(box.repo.count()))
         self.assertGreaterEqual(view.minimumWidth(), widest)
+
+    def test_a_processor_build_where_the_vulkan_one_belongs_says_so(self):
+        # The Vulkan whisper-server is published by hand, and until it is
+        # there the download lands upstream's processor build. Said nowhere,
+        # an idle graphics card looks exactly like one that is being used.
+        binary = self.path("bin/whisper/v1.9.3/whisper-server")
+        binary.parent.mkdir(parents=True)
+        binary.write_text("")
+        binary.chmod(0o755)
+        self.path("bin/whisper/installed.json").write_text(json.dumps(
+            {"tag": "v1.9.3", "binary": str(binary), "backend": "processor"}))
+        # A whisper-server on this machine's PATH would win over the download.
+        self.patch_attr(ggml.shutil, "which", lambda name: None)
+        label = self.window(cfg.Config()).local_whisper.program_label.text()
+        self.assertIn("v1.9.3", label)
+        self.assertIn("Vulkan", label)
+
+    def test_an_ordinary_install_is_reported_without_a_word_about_vulkan(self):
+        binary = self.path("bin/whisper/v1.9.3/whisper-server")
+        binary.parent.mkdir(parents=True)
+        binary.write_text("")
+        binary.chmod(0o755)
+        self.path("bin/whisper/installed.json").write_text(json.dumps(
+            {"tag": "v1.9.3", "binary": str(binary)}))
+        self.patch_attr(ggml.shutil, "which", lambda name: None)
+        label = self.window(cfg.Config()).local_whisper.program_label.text()
+        self.assertIn("v1.9.3", label)
+        self.assertNotIn("Vulkan", label)
 
     def test_only_the_chosen_transcriber_is_on_screen(self):
         window = self.window(self.config(transcribe_provider="openai"))

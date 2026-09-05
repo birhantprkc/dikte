@@ -358,6 +358,13 @@ class LocalModelBox(QGroupBox):
             # for this machine and may reach the graphics card, while the
             # released binaries carry processor backends only.
             self.program_label.setText(t("Installed on the system: {path}", path=path))
+        elif ggml.vulkan_missing(self.program):
+            # The download landed the processor build where the graphics card
+            # one belongs, and nothing else on this window would say so.
+            self.program_label.setText(
+                t("Downloaded, version {version}. There was no Vulkan build, "
+                  "so this one runs on the processor.",
+                  version=ggml.installed_version(self.program) or "?"))
         else:
             self.program_label.setText(
                 t("Downloaded, version {version}.",

@@ -284,6 +284,17 @@ def _wanted_assets(program):
     return (f"bin-ubuntu-{arch}.tar.gz",)
 
 
+def _managed_whisper(program, tag=""):
+    """Whether this machine is one Dikte publishes its own whisper-server for.
+
+    Linux x86_64 with a Vulkan loader on it, and no version asked for by hand:
+    a pinned version is upstream's to answer.
+    """
+    return (not tag and program is WHISPER and sys.platform == "linux"
+            and platform.machine().lower() in ("x86_64", "amd64")
+            and _has_vulkan())
+
+
 def _install_record(program):
     return BIN_DIR / program.name / "installed.json"
 
@@ -305,6 +316,21 @@ def installed_program(program):
 
 def installed_version(program):
     return _read_record(program).get("tag") or ""
+
+
+def vulkan_missing(program):
+    """Whether what Dikte installed is the processor build on a machine the
+    Vulkan one was fetched for.
+
+    The Vulkan whisper-server is a release of Dikte's own, published by hand
+    once the reviewed archive is built, and the install falls back to the
+    upstream processor build whenever that release, the file in it, or its
+    reviewed digest is not there. Nothing is wrong with the fallback except
+    that it is invisible: a graphics card sitting idle looks exactly like a
+    graphics card being used.
+    """
+    return (bool(installed_program(program))
+            and _read_record(program).get("backend") == "processor")
 
 
 def program_path(program, custom=""):
@@ -382,10 +408,8 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
     """
     repo = program.repo
     release_tag = tag or "latest"
-    managed = (not tag and program is WHISPER and sys.platform == "linux"
-               and platform.machine().lower() in ("x86_64", "amd64")
-               and _has_vulkan())
-    item = None
+    managed = _managed_whisper(program, tag)
+    item, vulkan = None, False
     if managed:
         repo = DIKTE_REPO
         release_tag = MANAGED_WHISPER_RELEASE
@@ -398,6 +422,7 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
         item = next((a for a in assets
                      if a.name.endswith(MANAGED_WHISPER_VULKAN)
                      and a.sha256 == MANAGED_WHISPER_SHA256), None)
+        vulkan = item is not None
         if item:
             tag = MANAGED_WHISPER_VERSION
 
@@ -476,8 +501,13 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
         # Found under the sibling, run from the final directory.
         binary = into / binary.relative_to(fresh)
         # Written last, so the record never points at anything half-made.
-        _install_record(program).write_text(
-            json.dumps({"tag": tag, "binary": str(binary)}), encoding="utf-8")
+        record = {"tag": tag, "binary": str(binary)}
+        if managed:
+            # Which of the two builds this machine ended up with. Only written
+            # where both were on offer, so an install that never had the
+            # choice is not made to look like a fallback.
+            record["backend"] = "vulkan" if vulkan else "processor"
+        _install_record(program).write_text(json.dumps(record), encoding="utf-8")
     except OSError as exc:
         raise LocalError(t("Could not install {name}: {error}",
                            name=program.name, error=exc)) from exc

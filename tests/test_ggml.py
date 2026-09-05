@@ -259,6 +259,7 @@ class InstallProgram(Local):
             "whisper-bin-ubuntu-vulkan-x64.tar.gz"))
         self.assertTrue(os.path.isfile(path))
         self.assertEqual("v1.9.3", ggml.installed_version(ggml.WHISPER))
+        self.assertFalse(ggml.vulkan_missing(ggml.WHISPER))
 
     def test_an_explicit_whisper_version_still_comes_from_upstream(self):
         self.patch_attr(ggml, "_arch", lambda: "x64")
@@ -338,6 +339,24 @@ class InstallProgram(Local):
         self.assertTrue(calls[2].full_url.endswith(
             "whisper-bin-ubuntu-x64.tar.gz"))
         self.assertTrue(os.path.isfile(path))
+
+    def test_a_fallback_to_the_processor_build_is_there_to_be_shown(self):
+        """Until the Vulkan package is published every download lands the
+        processor build, and a graphics card sitting idle looks exactly like
+        one being used. The window asks this and says so."""
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        managed = self.release("Dikte-1.1.0-x86_64.AppImage")
+        managed["tag_name"] = "whisper.cpp-v1.9.3"
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(managed, upstream, body(self.archive)):
+            ggml.install_program(ggml.WHISPER)
+        self.assertTrue(ggml.vulkan_missing(ggml.WHISPER))
+
+    def test_a_machine_with_no_vulkan_is_not_told_it_is_missing_one(self):
+        # Nothing was on offer to fall back from, so there is nothing to say.
+        self.install("whisper-bin-ubuntu-x64.tar.gz")
+        self.assertFalse(ggml.vulkan_missing(ggml.WHISPER))
 
     def test_a_release_with_nothing_for_this_machine_says_so(self):
         self.patch_attr(ggml, "_arch", lambda: "x64")

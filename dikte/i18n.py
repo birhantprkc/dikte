@@ -780,6 +780,9 @@ TR = {
     "Not installed.": "Kurulu değil.",
     "Installed on the system: {path}": "Sistemde kurulu: {path}",
     "Downloaded, version {version}.": "İndirildi, sürüm {version}.",
+    "Downloaded, version {version}. There was no Vulkan build, "
+    "so this one runs on the processor.":
+        "İndirildi, sürüm {version}. Vulkan sürümü yoktu, bu sürüm işlemcide çalışıyor.",
     "Fetching the model list…": "Model listesi çekiliyor…",
     "Downloading…": "İndiriliyor…",
     "Downloading: {done} of {total}{share}": "İndiriliyor: {done} / {total}{share}",
