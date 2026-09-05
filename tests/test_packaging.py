@@ -58,11 +58,18 @@ class WhisperVulkanPackaging(unittest.TestCase):
         publish_script = publish_script.split("        run: |", 1)[1]
         self.assertNotIn("${{ inputs.", publish_script)
 
-    def test_bundle_ci_runs_when_its_installer_or_contract_changes(self):
+    def test_bundle_ci_runs_only_for_what_the_bundle_is_built_from(self):
+        """A 45 minute build on a README typo is a tax on every other change.
+
+        What ties ggml.py to the release is checked in this file instead, and
+        this file runs on every pull request in milliseconds."""
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        for path in ("dikte/ggml.py", "tests/test_packaging.py",
-                     "README.md", "README.tr.md"):
-            self.assertIn(f"- {path}", workflow)
+        trigger = workflow.split("workflow_dispatch:", 1)[0]
+        self.assertIn("- packaging/whisper-vulkan/**", trigger)
+        self.assertIn("- .github/workflows/whisper-vulkan.yml", trigger)
+        for path in ("dikte/ggml.py", "tests/test_ggml.py",
+                     "tests/test_packaging.py", "README.md", "README.tr.md"):
+            self.assertNotIn(f"- {path}", trigger)
 
     def test_the_validator_checks_tar_links_before_extraction(self):
         validator = (PACKAGING / "validate-package.sh").read_text(

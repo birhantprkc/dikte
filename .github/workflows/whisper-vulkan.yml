@@ -1,15 +1,14 @@
 name: whisper.cpp Vulkan bundle
 
+# Only what the bundle is built from. Compiling the Vulkan shaders takes
+# tens of minutes, and a README typo is not worth one: what ties ggml.py to
+# this release is a handful of assertions in tests/test_packaging.py, and
+# those run on every pull request in milliseconds.
 on:
   pull_request:
     paths:
       - packaging/whisper-vulkan/**
       - .github/workflows/whisper-vulkan.yml
-      - dikte/ggml.py
-      - tests/test_ggml.py
-      - tests/test_packaging.py
-      - README.md
-      - README.tr.md
   workflow_dispatch:
     inputs:
       whisper_version:
