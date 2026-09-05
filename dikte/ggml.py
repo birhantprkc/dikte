@@ -90,6 +90,10 @@ MANAGED_WHISPER_SHA256 = (
 WHISPER_MODELS_REPO = "ggerganov/whisper.cpp"
 LLM_AUTHOR = "ggml-org"
 
+# The file llama.cpp attaches to its version releases in place of the binaries:
+# a line naming the nightly tag those are published under.
+NIGHTLY_TAG = "nightly-tag.txt"
+
 # What the whisper repository holds besides models: Core ML encoders for Apple
 # hardware and the odd loose file.
 WHISPER_PREFIX = "ggml-"
@@ -295,6 +299,91 @@ def _managed_whisper(program, tag=""):
             and _has_vulkan())
 
 
+def _managed_asset(refresh=False):
+    """The Vulkan whisper-server Dikte builds itself, or None.
+
+    Taken only when the archive's digest is the reviewed one. Anything else,
+    a release that is not there yet, a GitHub that cannot be reached, a file
+    that is not the reviewed bytes, leaves upstream's processor build as the
+    answer, and the install record says which of the two landed.
+    """
+    try:
+        _, assets = hub.release(DIKTE_REPO, MANAGED_WHISPER_RELEASE,
+                                refresh=refresh)
+    except hub.HubError:
+        return None
+    return next((a for a in assets
+                 if a.name.endswith(MANAGED_WHISPER_VULKAN)
+                 and a.sha256 == MANAGED_WHISPER_SHA256), None)
+
+
+def _matching_asset(program, assets):
+    """The archive this machine wants out of one release's files, or None."""
+    for ending in _wanted_assets(program):
+        item = next((a for a in assets if a.name.endswith(ending)), None)
+        if item:
+            return item
+    return None
+
+
+def _pick_asset(program, tag="", refresh=False):
+    """(tag, Item) for the release archive to install. Item is None when there
+    is none for this machine.
+
+    Dikte's own Vulkan whisper-server comes before upstream's where this
+    machine is one it is built for, because whisper.cpp publishes no Vulkan
+    archive for Linux at all.
+
+    A named tag is taken as given. For the newest, what GitHub answers is not
+    always where the builds are: llama.cpp's latest release is a version marker
+    carrying a single nightly-tag.txt, which names the tag the archives are
+    actually attached to, and those are prereleases that "latest" never points
+    at. The pointer is followed when it is there, and when it is not, the newest
+    release that does carry a build for this machine is taken instead.
+    """
+    if _managed_whisper(program, tag):
+        item = _managed_asset(refresh=refresh)
+        if item:
+            return MANAGED_WHISPER_VERSION, item
+    named = bool(tag) and tag != "latest"
+    missing = None
+    try:
+        tag, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
+    except hub.HubError as exc:
+        # A release carrying no files at all is the case the search below exists
+        # for, not a reason to stop before it: the build for this machine may be
+        # attached to a prerelease that "latest" never points at. The failure is
+        # kept rather than dropped, because an unreachable GitHub arrives here
+        # the same way and that one is the message the caller wants.
+        if named:
+            raise
+        missing, assets = exc, []
+    item = _matching_asset(program, assets)
+    if item or named:
+        return tag, item
+    # Best effort from here on: a machine this project publishes nothing for is
+    # not a failed lookup, and the caller's message about that is the useful
+    # one. Whatever goes wrong while looking further leaves it standing.
+    try:
+        pointer = next((a for a in assets if a.name == NIGHTLY_TAG), None)
+        if pointer:
+            nightly = hub.text(pointer.url).strip()
+            if nightly:
+                found, assets = hub.release(program.repo, nightly, refresh=refresh)
+                item = _matching_asset(program, assets)
+                if item:
+                    return found, item
+        for found, assets in hub.releases(program.repo, refresh=refresh):
+            item = _matching_asset(program, assets)
+            if item:
+                return found, item
+    except hub.HubError:
+        pass
+    if missing is not None:
+        raise missing
+    return tag, None
+
+
 def _install_record(program):
     return BIN_DIR / program.name / "installed.json"
 
@@ -403,41 +492,17 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
                     refresh=False):
     """Fetch and unpack a release. The path to the binary, or "" when stopped.
 
-    Ordinary builds follow the program's newest release. The Linux Vulkan build
-    comes from Dikte's pinned dependency release instead.
+    `tag` is empty for whatever the project released last, which is the point:
+    a version pinned in Dikte's source would mean a release of Dikte every time
+    whisper.cpp has one. The Linux Vulkan whisper-server is the exception, and
+    _pick_asset says why.
     """
-    repo = program.repo
-    release_tag = tag or "latest"
     managed = _managed_whisper(program, tag)
-    item, vulkan = None, False
-    if managed:
-        repo = DIKTE_REPO
-        release_tag = MANAGED_WHISPER_RELEASE
-        try:
-            tag, assets = hub.release(repo, release_tag, refresh=refresh)
-        except hub.HubError:
-            # Older Dikte releases have no managed server. The upstream CPU
-            # build remains the usable answer there and during API failures.
-            assets = []
-        item = next((a for a in assets
-                     if a.name.endswith(MANAGED_WHISPER_VULKAN)
-                     and a.sha256 == MANAGED_WHISPER_SHA256), None)
-        vulkan = item is not None
-        if item:
-            tag = MANAGED_WHISPER_VERSION
+    try:
+        tag, item = _pick_asset(program, tag, refresh=refresh)
+    except hub.HubError as exc:
+        raise LocalError(str(exc)) from exc
 
-    if item is None:
-        repo = program.repo
-        wanted = _wanted_assets(program)
-        try:
-            tag, assets = hub.release(repo, "latest" if managed else release_tag,
-                                      refresh=refresh)
-        except hub.HubError as exc:
-            raise LocalError(str(exc)) from exc
-        for ending in wanted:
-            item = next((a for a in assets if a.name.endswith(ending)), None)
-            if item:
-                break
     if item is None:
         # Nothing to download and nothing to install for you: whisper.cpp
         # publishes no macOS binary, and Homebrew's whisper-cpp is configured
@@ -452,7 +517,7 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
                 "or transcribe in the cloud. See the README."
             ))
         raise LocalError(t("{repo} {tag} has no build for this machine.",
-                           repo=repo, tag=tag))
+                           repo=program.repo, tag=tag))
 
     into = BIN_DIR / program.name / tag
     fresh = into.with_name(tag + ".new")
@@ -506,7 +571,9 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
             # Which of the two builds this machine ended up with. Only written
             # where both were on offer, so an install that never had the
             # choice is not made to look like a fallback.
-            record["backend"] = "vulkan" if vulkan else "processor"
+            record["backend"] = (
+                "vulkan" if item.name.endswith(MANAGED_WHISPER_VULKAN)
+                else "processor")
         _install_record(program).write_text(json.dumps(record), encoding="utf-8")
     except OSError as exc:
         raise LocalError(t("Could not install {name}: {error}",
