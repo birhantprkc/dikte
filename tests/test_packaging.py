@@ -39,6 +39,7 @@ class WhisperVulkanPackaging(unittest.TestCase):
                      "Verify reviewed archive digest",
                      "Validate archive and ELF contract",
                      "CPU fallback smoke test (no Vulkan loader)",
+                     "Vulkan loader present, no device smoke test",
                      "Vulkan plugin-load smoke test (Mesa llvmpipe)",
                      "Publish dependency release"):
             self.assertIn(step, workflow)
@@ -70,6 +71,19 @@ class WhisperVulkanPackaging(unittest.TestCase):
         for path in ("dikte/ggml.py", "tests/test_ggml.py",
                      "tests/test_packaging.py", "README.md", "README.tr.md"):
             self.assertNotIn(f"- {path}", trigger)
+
+    def test_the_smoke_tests_run_what_dikte_runs(self):
+        """-ng is what Dikte passes when its GPU setting is off, and a run
+        with it never asks for a backend at all. The three runs that have to
+        hold are the ones without it: no loader, a loader with nothing behind
+        it, and a working device."""
+        script = (PACKAGING / "smoke-runtime.sh").read_text(encoding="utf-8")
+        code = "\n".join(line for line in script.splitlines()
+                         if not line.lstrip().startswith("#"))
+        self.assertNotIn("-ng", code)
+        for mode in ("cpu)", "noicd)", "vulkan)"):
+            self.assertIn(mode, script)
+        self.assertTrue((PACKAGING / "Dockerfile.runtime-noicd").is_file())
 
     def test_the_validator_checks_tar_links_before_extraction(self):
         validator = (PACKAGING / "validate-package.sh").read_text(

@@ -110,6 +110,9 @@ jobs:
       - name: CPU fallback smoke test (no Vulkan loader)
         run: OUT_DIR=dist packaging/whisper-vulkan/smoke-runtime.sh cpu
 
+      - name: Vulkan loader present, no device smoke test
+        run: OUT_DIR=dist packaging/whisper-vulkan/smoke-runtime.sh noicd
+
       - name: Vulkan plugin-load smoke test (Mesa llvmpipe)
         run: OUT_DIR=dist packaging/whisper-vulkan/smoke-runtime.sh vulkan
 

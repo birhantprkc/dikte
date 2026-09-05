@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mode=${1:?usage: smoke-runtime.sh cpu|vulkan}
+mode=${1:?usage: smoke-runtime.sh cpu|noicd|vulkan}
 : "${OUT_DIR:=work/out}"
 : "${FIXTURE_SOURCE:=vendor/whisper.cpp}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,6 +10,7 @@ FIXTURE_SOURCE="$(realpath "$FIXTURE_SOURCE")"
 asset=whisper-bin-ubuntu-vulkan-x64
 case "$mode" in
   cpu) dockerfile=Dockerfile.runtime-cpu; image=dikte-whisper-runtime-cpu:spike ;;
+  noicd) dockerfile=Dockerfile.runtime-noicd; image=dikte-whisper-runtime-noicd:spike ;;
   vulkan) dockerfile=Dockerfile.runtime-vulkan; image=dikte-whisper-runtime-vulkan:spike ;;
   *) echo "unknown mode: $mode" >&2; exit 2 ;;
 esac
@@ -23,9 +24,10 @@ args=("/bundle/$asset/whisper-server" -m /fixtures/model.bin
       --host 127.0.0.1 --port 8080
       --inference-path /v1/audio/transcriptions -l auto -sns -nlp)
 env_args=()
-if [[ "$mode" == cpu ]]; then
-  args+=(-ng)
-else
+# No -ng anywhere: Dikte passes it only when its GPU setting is off, so the
+# run that has to survive a missing loader or a missing device is this one,
+# where the backend registry actually goes looking for them.
+if [[ "$mode" == vulkan ]]; then
   env_args=(-e LIBGL_ALWAYS_SOFTWARE=1
             -e VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json)
 fi
@@ -40,6 +42,16 @@ docker run --rm --name "dikte-whisper-$mode-smoke" \
     if [ "$SMOKE_MODE" = cpu ] && ldconfig -p | grep -q libvulkan.so.1; then
       echo "CPU smoke image unexpectedly has a Vulkan loader" >&2
       exit 1
+    fi
+    if [ "$SMOKE_MODE" = noicd ]; then
+      if ! ldconfig -p | grep -q libvulkan.so.1; then
+        echo "no-ICD smoke image has no Vulkan loader to load" >&2
+        exit 1
+      fi
+      if compgen -G "/usr/share/vulkan/icd.d/*.json" >/dev/null; then
+        echo "no-ICD smoke image has a driver after all" >&2
+        exit 1
+      fi
     fi
     "$@" >/tmp/server.log 2>&1 &
     pid=$!
