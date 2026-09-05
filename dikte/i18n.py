@@ -779,6 +779,7 @@ TR = {
     "Local model": "Yerel model",
     "Not installed.": "Kurulu değil.",
     "Installed on the system: {path}": "Sistemde kurulu: {path}",
+    "Download again": "Yeniden indir",
     "Downloaded, version {version}.": "İndirildi, sürüm {version}.",
     "Downloaded, version {version}. There was no Vulkan build, "
     "so this one runs on the processor.":
