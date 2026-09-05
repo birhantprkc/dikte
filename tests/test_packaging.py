@@ -85,6 +85,20 @@ class WhisperVulkanPackaging(unittest.TestCase):
             self.assertIn(mode, script)
         self.assertTrue((PACKAGING / "Dockerfile.runtime-noicd").is_file())
 
+    def test_an_unreviewed_version_is_reported_and_never_published(self):
+        """The digest of a version nobody has reviewed cannot be known before
+        it is built, so the gate cannot be the only way through."""
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("expected_sha256", workflow)
+        self.assertIn(
+            "refusing to publish an archive whose digest has not been reviewed",
+            workflow)
+
+    def test_the_shape_of_the_inputs_is_checked_before_they_are_used(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertLess(workflow.index("- name: Validate source coordinates"),
+                        workflow.index("- name: Check out pinned whisper.cpp"))
+
     def test_the_validator_checks_tar_links_before_extraction(self):
         validator = (PACKAGING / "validate-package.sh").read_text(
             encoding="utf-8")

@@ -21,6 +21,14 @@ on:
         required: true
         default: "371b5a7561823ab2bb32142d2751e35e7534727b"
         type: string
+      expected_sha256:
+        description: >-
+          Reviewed archive SHA-256. Leave empty for a version this file has
+          not reviewed: the digest of what was built is reported instead of
+          being checked, and publishing is refused.
+        required: false
+        default: ""
+        type: string
       publish:
         description: Publish a Dikte dependency release
         required: true
@@ -37,7 +45,8 @@ concurrency:
 env:
   WHISPER_VERSION: ${{ inputs.whisper_version || '1.9.3' }}
   WHISPER_COMMIT: ${{ inputs.whisper_commit || '371b5a7561823ab2bb32142d2751e35e7534727b' }}
-  MANAGED_WHISPER_SHA256: c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8
+  REVIEWED_WHISPER_VERSION: "1.9.3"
+  REVIEWED_WHISPER_SHA256: c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8
 
 jobs:
   build:
@@ -49,6 +58,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Validate source coordinates
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WHISPER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$WHISPER_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+
       - name: Check out pinned whisper.cpp source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -57,13 +73,6 @@ jobs:
           path: vendor/whisper.cpp
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Validate source coordinates
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$WHISPER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$WHISPER_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 
       - name: Verify source version and commit
         shell: bash
@@ -92,9 +101,31 @@ jobs:
 
       - name: Verify reviewed archive digest
         shell: bash
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
+          set -euo pipefail
           read -r actual _ < dist/whisper-bin-ubuntu-vulkan-x64.tar.gz.sha256
-          test "$actual" = "$MANAGED_WHISPER_SHA256"
+          echo "built archive sha256: $actual"
+          expected="$EXPECTED_SHA256"
+          if [ -z "$expected" ] \
+              && [ "$WHISPER_VERSION" = "$REVIEWED_WHISPER_VERSION" ]; then
+            expected="$REVIEWED_WHISPER_SHA256"
+          fi
+          if [ -z "$expected" ]; then
+            # The digest of a version nobody has reviewed yet cannot be known
+            # before it is built. Reporting it is the whole point of the run;
+            # a release out of it is not.
+            if [ "${PUBLISH:-false}" = true ]; then
+              echo "refusing to publish an archive whose digest has not been reviewed" >&2
+              exit 1
+            fi
+            echo "::notice::no reviewed digest for $WHISPER_VERSION." \
+                 "Review the one above, then dispatch again with expected_sha256."
+            exit 0
+          fi
+          test "$actual" = "$expected"
 
       - name: Validate archive and ELF contract
         run: OUT_DIR=dist packaging/whisper-vulkan/validate-package.sh
