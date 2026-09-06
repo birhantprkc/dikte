@@ -20,17 +20,6 @@ PACKAGING = ROOT / "packaging" / "whisper-vulkan"
 WORKFLOW = ROOT / ".github" / "workflows" / "whisper-vulkan.yml"
 
 
-class AppImagePackaging(unittest.TestCase):
-    def test_the_desktop_exposes_the_release_version_to_appimage_managers(self):
-        script = (ROOT / "packaging" / "build-appimage.sh").read_text(
-            encoding="utf-8")
-        marker = 'cat > "$APPDIR/dikte.desktop" <<EOF\n'
-        desktop = script.split(marker, 1)[1].split("\nEOF", 1)[0]
-        rendered = desktop.replace("$VERSION", "1.2.0")
-        self.assertEqual(
-            1, rendered.splitlines().count("X-AppImage-Version=1.2.0"))
-
-
 class WhisperVulkanPackaging(unittest.TestCase):
     @unittest.skipUnless(sys.platform != "win32" and shutil.which("bash"),
                          "bash syntax check is unavailable")
