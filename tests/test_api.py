@@ -322,7 +322,12 @@ class TranscribeSegments(DikteTest):
         fields = multipart_fields(calls[0])
         self.assertEqual(fields["model"], "whisper-1")
         self.assertEqual(fields["response_format"], "verbose_json")
-        self.assertEqual(fields["timestamp_granularities[]"], "segment")
+        # Both are asked for: whisper answers with segments, and a model that
+        # does not mark them still answers with word times.
+        body = calls[0].data.decode("utf-8", "replace")
+        for level in ("segment", "word"):
+            self.assertIn(
+                f'name="timestamp_granularities[]"\r\n\r\n{level}\r\n', body)
 
     def test_openrouter_uses_the_namespaced_id(self):
         with fake_urlopen(self.reply([{"start": 0, "end": 1, "text": "hi"}])) as calls:
@@ -362,6 +367,74 @@ class TranscribeSegments(DikteTest):
         with fake_urlopen(self.reply([{"start": 5, "end": 1, "text": "hi"}])):
             self.assertEqual(api.transcribe_segments(OPENAI, self.wav),
                              [(5.0, 5.0, "hi")])
+
+    def test_a_long_sentence_is_broken_where_it_gets_too_long_to_read(self):
+        words = [{"word": "word", "start": i * 0.2, "end": i * 0.2 + 0.2}
+                 for i in range(60)]
+        cues = api.cues_from_words(words)
+        self.assertGreater(len(cues), 1)
+        for start, end, text in cues:
+            self.assertLessEqual(len(text), api.MAX_CUE_CHARS)
+            self.assertLessEqual(end - start, api.MAX_CUE_SECONDS + 0.2)
+
+    def test_a_pause_between_short_sentences_does_not_join_them(self):
+        cues = api.cues_from_words([
+            {"word": "Yes.", "start": 0.0, "end": 0.3},
+            {"word": "No.", "start": 9.0, "end": 9.3},
+        ])
+        self.assertEqual([(start, text) for start, _, text in cues],
+                         [(0.0, "Yes."), (9.0, "No.")])
+
+    def test_a_cue_too_short_to_read_is_held_until_the_next_one(self):
+        cues = api.cues_from_words([
+            {"word": "Yes.", "start": 0.0, "end": 0.3},
+            {"word": "No.", "start": 9.0, "end": 9.3},
+        ])
+        # The first has the room for it, the last has nothing after it to wait for.
+        self.assertEqual(cues[0][1], api.MIN_CUE_SECONDS)
+        self.assertEqual(cues[1][1], 9.0 + api.MIN_CUE_SECONDS)
+
+    def test_a_list_marker_does_not_end_a_cue_on_its_own(self):
+        cues = api.cues_from_words([
+            {"word": "1.", "start": 0.0, "end": 0.2},
+            {"word": "Antivirus.", "start": 0.4, "end": 1.6},
+        ])
+        self.assertEqual([text for _, _, text in cues], ["1. Antivirus."])
+
+    def test_a_sentence_ending_inside_a_quote_still_ends_the_cue(self):
+        cues = api.cues_from_words([
+            {"word": '"Stop', "start": 0.0, "end": 1.0},
+            {"word": 'there."', "start": 1.1, "end": 2.0},
+            {"word": "Then", "start": 2.2, "end": 2.6},
+        ])
+        self.assertEqual([text for _, _, text in cues],
+                         ['"Stop there."', "Then"])
+
+    def test_word_times_take_over_from_segments_too_long_to_read(self):
+        # What a model that does not mark segments answers with: one entry for
+        # the whole file, and the real timing in the words beside it.
+        reply = {
+            "text": "One. Two.",
+            "segments": [{"start": 0, "end": 60, "text": "One. Two."}],
+            "words": [
+                {"word": "One.", "start": 0.1, "end": 1.5},
+                {"word": "Two.", "start": 1.7, "end": 3.0},
+            ],
+        }
+        with fake_urlopen(reply):
+            self.assertEqual(api.transcribe_segments(OPENAI, self.wav),
+                             [(0.1, 1.5, "One."), (1.7, 3.0, "Two.")])
+
+    def test_whisper_segments_are_left_alone_when_words_come_too(self):
+        reply = {
+            "text": "hi there",
+            "segments": [{"start": 0, "end": 2, "text": "hi there"}],
+            "words": [{"word": "hi", "start": 0.0, "end": 0.5},
+                      {"word": "there", "start": 0.5, "end": 2.0}],
+        }
+        with fake_urlopen(reply):
+            self.assertEqual(api.transcribe_segments(OPENAI, self.wav),
+                             [(0.0, 2.0, "hi there")])
 
     def test_a_model_that_returned_no_segments_still_gives_its_text(self):
         with fake_urlopen(self.reply([], text="the whole thing")):
