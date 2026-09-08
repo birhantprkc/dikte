@@ -384,8 +384,8 @@ def _transcribe_request(target, audio_path, language, prompt, response_format,
     # takes it as the initial prompt, the way OpenAI does.
     if prompt and target.provider != "openrouter":
         fields.append(("prompt", prompt))
-    if granularity:
-        fields.append(("timestamp_granularities[]", granularity))
+    for level in granularity or ():
+        fields.append(("timestamp_granularities[]", level))
     body, ctype = _multipart(fields, "file", audio_path)
     # An hour of meeting takes the local server a while, and the idle unload has
     # to count that as the model being used rather than as nobody wanting it.
@@ -443,6 +443,96 @@ def _merge_word_splits(segments):
     return merged
 
 
+# A cue built here is one a reader has time for: about two lines of subtitle,
+# and no longer on screen than a sentence takes to say. Neither is a hard rule
+# for a sentence that ends early, only the point past which one is broken.
+MAX_CUE_SECONDS = 7.0
+MAX_CUE_CHARS = 84
+# The other end of it: a cue nobody can read because it was gone before they
+# looked. A full stop this early in a cue is not the end of anything worth
+# breaking on, which is what "1." and "Dr." are, and a cue that ends up short
+# anyway is held on screen until the next one needs the space.
+MIN_CUE_SECONDS = 1.2
+# No whisper segment is longer than the window it was heard in, so a segment
+# that runs past this came from a model that is not marking segments at all.
+WHISPER_WINDOW = 30.0
+SENTENCE_END = ".!?…"
+
+
+def _too_coarse(segments):
+    """Whether these segments are too long to be cues, or are not there at all.
+
+    Not every model behind /audio/transcriptions marks segments the way whisper
+    does. Some fill the field with one entry per paragraph, or with a single one
+    covering the whole file, which turns a fourteen minute video into three
+    subtitles. Word times are what those models do give, and cues built from
+    them are better than what the segments would have been.
+    """
+    if not segments:
+        return True
+    return any(float(seg.get("end") or 0.0) - float(seg.get("start") or 0.0)
+               > WHISPER_WINDOW for seg in segments)
+
+
+def cues_from_words(words):
+    """[(start, end, text)] cut out of word times, where segments were no use.
+
+    A cue ends where a sentence does, and failing that wherever it has grown too
+    long to read or too long to leave up. Nothing is ever cut between two words:
+    the times that arrive are per word, and so are the ones that leave.
+    """
+    cues = []
+    start = end = 0.0
+    current = []
+
+    def flush():
+        nonlocal current
+        if current:
+            cues.append((start, max(end, start), " ".join(current)))
+            current = []
+
+    for word in words:
+        text = (word.get("word") or "").strip()
+        if not text:
+            continue
+        at = float(word.get("start") or 0.0)
+        until = float(word.get("end") or at)
+        if current:
+            grown = len(" ".join(current)) + 1 + len(text)
+            if grown > MAX_CUE_CHARS or until - start > MAX_CUE_SECONDS:
+                flush()
+        if not current:
+            start = at
+        current.append(text)
+        end = until
+        # A sentence can end inside the punctuation that closes a quote. What
+        # is too short to have been a sentence is a list marker or a shortened
+        # word, and the cue goes on rather than ending on it.
+        if (end - start >= MIN_CUE_SECONDS
+                and text.rstrip("\"')]»”’").endswith(tuple(SENTENCE_END))):
+            flush()
+    flush()
+    return _held(cues)
+
+
+def _held(cues):
+    """Keep a cue that is still too short on screen, without covering the next.
+
+    A one word sentence is a fifth of a second of audio and so a fifth of a
+    second of subtitle, which is a flicker. It stays up until the cue after it
+    starts, or for as long as it takes to read, whichever comes first.
+    """
+    out = []
+    for index, (start, end, text) in enumerate(cues):
+        if end - start < MIN_CUE_SECONDS:
+            room = start + MIN_CUE_SECONDS
+            if index + 1 < len(cues):
+                room = min(room, cues[index + 1][0])
+            end = max(end, room)
+        out.append((start, end, text))
+    return out
+
+
 def transcribe(target, audio_path, language="", prompt="", timeout=300, aborter=None):
     data = _transcribe_request(
         target, audio_path, language, prompt, "json", timeout=timeout, aborter=aborter
@@ -459,15 +549,34 @@ def transcribe(target, audio_path, language="", prompt="", timeout=300, aborter=
 def transcribe_segments(target, audio_path, language="", prompt="", timeout=300,
                         aborter=None):
     """[(start_seconds, end_seconds, text)] using whisper-1's verbose response."""
-    data = _transcribe_request(
-        target._replace(model=timestamp_model(target.provider, target.model,
-                                              target.file_model)),
-        audio_path, language, prompt, "verbose_json",
-        granularity="segment", timeout=timeout, aborter=aborter,
-    )
+    target = target._replace(model=timestamp_model(target.provider, target.model,
+                                                   target.file_model))
+    ask = dict(language=language, prompt=prompt, response_format="verbose_json",
+               timeout=timeout, aborter=aborter)
+    # Word times are the way out of a model that does not mark segments, and
+    # whisper.cpp is not one of those, so the local server is only ever asked
+    # for what it has always been asked for. A hosted model that refuses the
+    # field says so with a 400, and the request it used to answer is still
+    # there to fall back on rather than losing the run over a field it did not
+    # need in the first place.
+    if target.provider == "local":
+        data = _transcribe_request(target, audio_path, granularity=("segment",), **ask)
+    else:
+        try:
+            data = _transcribe_request(target, audio_path,
+                                       granularity=("segment", "word"), **ask)
+        except ApiError as exc:
+            if exc.status != 400:
+                raise
+            data = _transcribe_request(target, audio_path,
+                                       granularity=("segment",), **ask)
     segments = data.get("segments") or []
     if target.provider == "local":
         segments = _merge_word_splits(segments)
+    if _too_coarse(segments):
+        cues = cues_from_words(data.get("words") or [])
+        if cues:
+            return cues
     out = []
     for seg in segments:
         text = (seg.get("text") or "").strip()
