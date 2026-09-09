@@ -13,8 +13,13 @@ library, 3.11 or newer, and PyQt6.
 *[Türkçe README](README.tr.md)*
 
 <p align="center">
-  <img src="docs/home.webp" width="620" alt="Dikte, sample transcript">
+  <img src="docs/home.webp" width="620" alt="Dikte, Nord theme">
+  <br><sub>Nord (default)</sub>
 </p>
+
+| Dracula | Classic dark | Classic light |
+|---|---|---|
+| <img src="docs/home-dracula.webp" width="270" alt="Dikte, Dracula"> | <img src="docs/home-dark.webp" width="270" alt="Dikte, Classic dark"> | <img src="docs/home-light.webp" width="270" alt="Dikte, Classic light"> |
 
 |  |  |
 |---|---|

@@ -12,8 +12,13 @@ Python standart kütüphanesi (3.11 veya üstü) ve PyQt6.
 *[English README](README.md)*
 
 <p align="center">
-  <img src="docs/home.webp" width="620" alt="Dikte, örnek metin">
+  <img src="docs/home.webp" width="620" alt="Dikte, Nord teması">
+  <br><sub>Nord (varsayılan)</sub>
 </p>
+
+| Dracula | Klasik karanlık | Klasik beyaz |
+|---|---|---|
+| <img src="docs/home-dracula.webp" width="270" alt="Dikte, Dracula"> | <img src="docs/home-dark.webp" width="270" alt="Dikte, Klasik karanlık"> | <img src="docs/home-light.webp" width="270" alt="Dikte, Klasik beyaz"> |
 
 |  |  |
 |---|---|
