@@ -279,6 +279,8 @@ class LocalModelBox(QGroupBox):
         self._later.timeout.connect(self._later_fetch)
 
         form = QFormLayout(self)
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         self.program_label = WrappedLabel()
         self.install_button = QPushButton(t("Download"))
@@ -1002,6 +1004,8 @@ class SettingsWindow(QDialog):
     def _general_tab(self):
         page = QWidget()
         form = QFormLayout(page)
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         self.ui_language = QComboBox()
         for label, code in UI_LANGUAGES:
@@ -1158,6 +1162,8 @@ class SettingsWindow(QDialog):
 
         stt = QGroupBox(t("Speech to text"))
         stt_form = QFormLayout(stt)
+        stt_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.transcribe_provider = QComboBox()
         for label, value in TRANSCRIBE_PROVIDERS:
             self.transcribe_provider.addItem(t(label), value)
@@ -1228,6 +1234,8 @@ class SettingsWindow(QDialog):
 
         orr = QGroupBox(t("Transcript cleanup"))
         orr_form = self.cleanup_form = QFormLayout(orr)
+        orr_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.cleanup_enabled = QCheckBox(t("Clean the transcript with a model"))
         orr_form.addRow("", self.cleanup_enabled)
 
@@ -1461,6 +1469,8 @@ class SettingsWindow(QDialog):
         # be worse than none.
         self.claude_box = QGroupBox(t("Claude Code"))
         claude_form = QFormLayout(self.claude_box)
+        claude_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.assistant_model = QComboBox()
         self.assistant_model.setEditable(True)
         self.assistant_model.addItems(ASSISTANT_MODELS)
@@ -1478,6 +1488,8 @@ class SettingsWindow(QDialog):
 
         self.codex_box = QGroupBox(t("Codex"))
         codex_form = QFormLayout(self.codex_box)
+        codex_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.assistant_codex_model = QComboBox()
         self.assistant_codex_model.setEditable(True)
         self.assistant_codex_model.addItem(t("Codex's own default"), "")
@@ -1493,6 +1505,8 @@ class SettingsWindow(QDialog):
 
         self.openrouter_box = QGroupBox("OpenRouter")
         or_form = QFormLayout(self.openrouter_box)
+        or_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.assistant_openrouter_model = QComboBox()
         self.assistant_openrouter_model.setEditable(True)
         self.assistant_openrouter_model.addItems(ASSISTANT_OR_MODELS)
@@ -1510,6 +1524,8 @@ class SettingsWindow(QDialog):
 
         self.agy_box = QGroupBox(t("Antigravity"))
         agy_form = QFormLayout(self.agy_box)
+        agy_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.assistant_agy_model = QComboBox()
         self.assistant_agy_model.setEditable(True)
         self.assistant_agy_model.addItem(t("Antigravity's own default"), "")
@@ -1528,6 +1544,8 @@ class SettingsWindow(QDialog):
 
         self.opencode_box = QGroupBox("OpenCode Go")
         og_form = QFormLayout(self.opencode_box)
+        og_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.assistant_opencode_model = QComboBox()
         self.assistant_opencode_model.setEditable(True)
         self.assistant_opencode_model.addItems(OPENCODE_MODELS)
@@ -1667,6 +1685,8 @@ class SettingsWindow(QDialog):
 
         models = QGroupBox(t("Minutes"))
         models_form = QFormLayout(models)
+        models_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.meeting_model = QComboBox()
         self.meeting_model.setEditable(True)
         self.meeting_model.addItems(MEETING_MODELS)
@@ -1849,6 +1869,8 @@ class SettingsWindow(QDialog):
         # and two combination boxes starting at different places read as two
         # unrelated settings rather than the pair they are.
         form = QFormLayout()
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self._shortcut_row(
             form, "toggle", t("Start and stop"),
             t("No global shortcut installed."), placeholder="Ctrl+Space",

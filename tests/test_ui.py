@@ -326,6 +326,56 @@ class Settings(DikteTest):
                 self.assertEqual(shown, [provider])
                 self.assertFalse(box.isHidden())
 
+    def test_editable_boxes_live_in_forms_that_grow_the_field_column(self):
+        window = self.window(cfg.Config())
+
+        def contains(layout, target):
+            for index in range(layout.count()):
+                item = layout.itemAt(index)
+                widget = item.widget()
+                if widget is target or (widget is not None and
+                                        widget.isAncestorOf(target)):
+                    return True
+                child = item.layout()
+                if child is not None and contains(child, target):
+                    return True
+            return False
+
+        forms = window.findChildren(settings_ui.QFormLayout)
+        boxes = [
+            window.paste_shortcut,
+            window.transcribe_model,
+            window.file_model,
+            window.cleanup_model,
+            window.cleanup_gemini_model,
+            window.cleanup_opencode_model,
+            window.cleanup_agy_model,
+            window.cleanup_claude_model,
+            window.cleanup_codex_model,
+            window.assistant_model,
+            window.assistant_agy_model,
+            window.assistant_opencode_model,
+            window.assistant_codex_model,
+            window.assistant_openrouter_model,
+            window.meeting_model,
+            *(box for box, _status, _missing in
+              window._shortcut_rows.values()),
+        ]
+        for box in boxes:
+            form = next((candidate for candidate in forms
+                         if contains(candidate, box)), None)
+            with self.subTest(box=box.objectName() or box.currentText()):
+                self.assertIsNotNone(form)
+                self.assertEqual(
+                    form.fieldGrowthPolicy(),
+                    settings_ui.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow,
+                )
+
+        self.assertEqual(
+            window.local_llm.layout().fieldGrowthPolicy(),
+            settings_ui.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow,
+        )
+
     def test_codex_answering_refills_both_of_its_boxes(self):
         """The list Codex gave replaces the built-in one, in both places, and
         neither loses what was already picked."""
