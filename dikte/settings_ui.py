@@ -1154,6 +1154,7 @@ class SettingsWindow(QDialog):
         page.setMaximumWidth(680)
         area = QScrollArea()
         area.setWidgetResizable(True)
+        area.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         area.setFrameShape(QScrollArea.Shape.NoFrame)
         area.setWidget(page)
         for box in page.findChildren((QComboBox, QAbstractSpinBox)):
@@ -1986,14 +1987,11 @@ class SettingsWindow(QDialog):
         row = QHBoxLayout()
         row.addWidget(copy)
         row.addWidget(self.minutes_retry)
+        row.addWidget(folder)
+        row.addWidget(delete)
+        row.addWidget(reload_)
         row.addStretch()
         layout.addLayout(row)
-        more = QHBoxLayout()
-        more.addWidget(folder)
-        more.addWidget(delete)
-        more.addWidget(reload_)
-        more.addStretch()
-        layout.addLayout(more)
         return page
 
     def _file_tab(self):

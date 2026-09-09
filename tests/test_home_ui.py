@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from dikte import config as cfg, home_ui, i18n
 from dikte.app import Dikte
@@ -85,6 +85,40 @@ class Home(DikteTest):
         QApplication.processEvents()
         self.assertLess(self.window.meeting_button.width(), 300)
         self.assertLessEqual(self.settings.minutes_view.width(), 680)
+
+    def test_wide_windows_center_every_task_and_settings_page(self):
+        self.window.resize(1900, 1000)
+        for mode, area in self.window.mode_pages.items():
+            self.window.show_mode(mode)
+            QApplication.processEvents()
+            with self.subTest(mode=mode):
+                self.assertLessEqual(area.widget().width(), 680)
+                self.assertAlmostEqual(area.widget().geometry().center().x(),
+                                       area.viewport().rect().center().x(), delta=1)
+        self.settings.resize(1900, 1000)
+        self.settings.show()
+        for index in range(self.settings.tabs.count()):
+            self.settings.tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            area = self.settings.tabs.widget(index)
+            with self.subTest(settings=index):
+                self.assertAlmostEqual(area.widget().geometry().center().x(),
+                                       area.viewport().rect().center().x(), delta=1)
+
+    def test_meeting_and_assistant_actions_share_one_row(self):
+        self.window.resize(620, 760)
+        for mode, labels in (
+            ("meeting", ("Copy", "Write it up", "Open the folder", "Delete selected", "Reload")),
+            ("ask", (self.window.ask_button.text(), "Start a new conversation")),
+        ):
+            self.window.show_mode(mode)
+            QApplication.processEvents()
+            page = self.window.mode_pages[mode]
+            buttons = {b.text(): b for b in page.findChildren(QPushButton)}
+            positions = [buttons[label].mapTo(page, buttons[label].rect().center()).y()
+                         for label in labels]
+            with self.subTest(mode=mode):
+                self.assertLessEqual(max(positions) - min(positions), 1)
 
     def test_empty_state_does_not_invent_a_transcript(self):
         self.assertEqual(self.window.latest_text.toPlainText(), "")
