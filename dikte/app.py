@@ -58,6 +58,7 @@ from .i18n import t  # noqa: E402
 from .meeting import MeetingPipeline  # noqa: E402
 from .overlay import Overlay  # noqa: E402
 from .settings_ui import SettingsWindow  # noqa: E402
+from .home_ui import HomeWindow  # noqa: E402
 from .worker import Pipeline  # noqa: E402
 
 SERVER_NAME = ipc.SERVER_NAME
@@ -138,6 +139,8 @@ class Dikte:
         self.meeting_base = ""
         self.meeting_message = ""
         self.settings_window = None
+        self.home_window = None
+        self.home_messages = {}
         # The single-instance server, handed over once run_app has opened it, so
         # that a restart can stop answering before the replacement starts.
         self.server = None
@@ -165,13 +168,15 @@ class Dikte:
 
         self.overlay = Overlay(self.conf["overlay_corner"],
                                screen_name=self.conf["overlay_screen"],
-                               follow_pointer=self.conf["overlay_follows_pointer"])
+                               follow_pointer=self.conf["overlay_follows_pointer"],
+                               theme_name=self.conf["theme"])
         # The agent's indicator sits on top of the dictation one when both are
         # up, and drops into the corner when it is alone there.
         self.ask_overlay = Overlay(self.conf["overlay_corner"], below=self.overlay,
                                    dismissable=True,
                                    screen_name=self.conf["overlay_screen"],
-                                   follow_pointer=self.conf["overlay_follows_pointer"])
+                                   follow_pointer=self.conf["overlay_follows_pointer"],
+                               theme_name=self.conf["theme"])
         self.recorder = audio.Recorder()
         self.pipeline = Pipeline(self.conf)
         self.ask_pipeline = Pipeline(self.conf)
@@ -195,7 +200,7 @@ class Dikte:
         self.pipeline.stage.connect(self._on_stage)
         self.pipeline.finished.connect(self._on_finished)
         self.pipeline.failed.connect(self._on_pipeline_failed)
-        self.ask_pipeline.stage.connect(self.ask_overlay.show_busy)
+        self.ask_pipeline.stage.connect(self._on_ask_stage)
         self.ask_pipeline.finished.connect(self._on_ask_finished)
         self.ask_pipeline.failed.connect(self._on_ask_error)
         self.ask_pipeline.cancelled.connect(self._on_ask_cancelled)
@@ -293,6 +298,10 @@ class Dikte:
         self.unload_action = QAction("", self.menu)
         self.unload_action.triggered.connect(self.unload_models)
         self.menu.addAction(self.unload_action)
+
+        self.home_action = QAction(t("Open Dikte"), self.menu)
+        self.home_action.triggered.connect(self.open_home)
+        self.menu.addAction(self.home_action)
 
         self.settings_action = QAction(t("Settings…"), self.menu)
         self.settings_action.triggered.connect(self.open_settings)
@@ -524,7 +533,7 @@ class Dikte:
     # than only able to press its buttons.
 
     def handle(self, request, reply):
-        cmd = str(request.get("cmd") or "settings").strip()
+        cmd = str(request.get("cmd") or "home").strip()
         if cmd in ("toggle", "start", "stop", "record"):
             self._dictation_request(cmd, request, reply)
         elif cmd == "ask":
@@ -541,6 +550,7 @@ class Dikte:
                 "ask-reset": self.reset_conversation,
                 "meeting-cancel": self.cancel_meeting,
                 "settings": self.open_settings,
+                "home": self.open_home,
                 "reload": self.reload_settings,
                 "restart": self.restart,
                 "quit": self.app.quit,
@@ -609,8 +619,27 @@ class Dikte:
 
     def _settle(self, kind, payload):
         """Tell whoever was waiting on this run how it ended."""
+        self._home_settled(kind, payload)
         for reply in self._waiters.pop(kind, []):
             reply(payload)
+
+    def _home_settled(self, kind, payload):
+        if not hasattr(self, "home_messages"):
+            self.home_messages = {}
+        self.home_messages.pop(kind + "_stage", None)
+        if payload.get("cancelled"):
+            message = t("Stopped.")
+        elif payload.get("error"):
+            message = t("Failed: {error}", error=payload["error"])
+        elif payload.get("warning"):
+            message = t("Completed with a warning: {error}", error=payload["warning"])
+        else:
+            message = t("Transcript ready") if kind == DICTATION else ""
+        self.home_messages[kind] = message
+        window = getattr(self, "home_window", None)
+        if window is not None:
+            window.refresh_results()
+            window.refresh()
 
     def _auto_stop(self, run):
         """The end of a `record --seconds`, if that recording is still the one."""
@@ -656,6 +685,8 @@ class Dikte:
     def reload_settings(self):
         """Read the config file back after something outside changed it."""
         self.conf.load()
+        if self.settings_window is not None:
+            self.settings_window.refresh_configuration()
         self._apply_settings()
 
     def _toggle(self):
@@ -706,6 +737,9 @@ class Dikte:
         # recorder's.
         if self.state == RECORDING or self.recording:
             return
+        if isinstance(getattr(self, "home_messages", None), dict):
+            self.home_messages[DICTATION] = ""
+            self.home_messages.pop("dictation_stage", None)
         self.front_before = self._the_front()
         self.overlay.show_recording()
         self._begin_recording(DICTATION)
@@ -720,6 +754,9 @@ class Dikte:
     def start_ask(self):
         if self.ask_state != IDLE or self.recording:
             return
+        if isinstance(getattr(self, "home_messages", None), dict):
+            self.home_messages[ASK] = ""
+            self.home_messages.pop("ask_stage", None)
         self.front_before = self._the_front()
         self.ask_overlay.show_recording(asking=True)
         self._begin_recording(ASK)
@@ -1038,7 +1075,7 @@ class Dikte:
         self.overlay.show_error(t("Meeting failed: {error}", error=first_line))
         self.tray.showMessage(
             t("Dikte: the meeting could not be written up"),
-            t("{error}\n\nThe recording has been kept. Settings → Minutes can "
+            t("{error}\n\nThe recording has been kept. Meeting → Minutes can "
               "try again.", error=error),
             QSystemTrayIcon.MessageIcon.Warning, 12000,
         )
@@ -1080,7 +1117,14 @@ class Dikte:
             self.pipeline.run(wav_path, duration, rms_values,
                               paste=wants_paste, focus=focus)
 
+    def _on_ask_stage(self, message):
+        if isinstance(getattr(self, "home_messages", None), dict):
+            self.home_messages["ask_stage"] = message
+        self.ask_overlay.show_busy(message)
+
     def _on_stage(self, message):
+        if isinstance(getattr(self, "home_messages", None), dict):
+            self.home_messages["dictation_stage"] = message
         # The corner belongs to the recording when one is on: the previous
         # run's progress must not wipe the waveform mid-sentence.
         if self.state != RECORDING:
@@ -1105,19 +1149,18 @@ class Dikte:
             # a rejected key otherwise looks exactly like working dictation.
             if self.state != RECORDING:
                 self.overlay.show_warning(
-                    t("Pasted raw, cleanup failed: {error}",
+                    t("Completed with a warning: {error}",
                       error=warning.splitlines()[0])
                 )
             self.tray.showMessage(
-                t("Dikte: cleanup failed"), warning,
+                t("Dikte: completed with a warning"), warning,
                 QSystemTrayIcon.MessageIcon.Warning, 10000,
             )
         elif self.state != RECORDING:
             # While a new recording is on, the flash is skipped: the text
             # arriving where the cursor is says everything it would have.
-            action = t("Pasted") if self.conf["auto_paste"] else t("Copied")
             self.overlay.show_done(
-                t("{action}: {preview}", action=action, preview=_preview(text))
+                t("Transcript ready: {preview}", preview=_preview(text))
             )
         self._transcript_settled({"ok": True, "text": text, "raw": _raw,
                                   "warning": warning,
@@ -1264,9 +1307,21 @@ class Dikte:
 
     # ---- settings ---------------------------------------------------------
 
+    def open_home(self):
+        if self.settings_window is None:
+            self._make_settings()
+        if getattr(self, "home_window", None) is None:
+            self.home_window = HomeWindow(self, self.settings_window)
+        self.home_window.show()
+        self.home_window.raise_()
+        self.home_window.activateWindow()
+
     def open_settings(self):
         if self.settings_window is None:
             self._make_settings()
+        else:
+            self.settings_window.refresh_configuration()
+            self.settings_window.refresh_sources()
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
@@ -1281,8 +1336,9 @@ class Dikte:
         self.settings_window.finished.connect(self._settings_closed)
 
     def _settings_closed(self, *_):
-        # Don't drop the object while its own signal is still being delivered.
-        QTimer.singleShot(0, lambda: setattr(self, "settings_window", None))
+        # Task pages share this controller and may still be processing a file.
+        # Closing the configuration dialog keeps both its edits and jobs alive.
+        pass
 
     def _reopen_settings(self):
         """Replace the settings window, so a language change reaches it too.
@@ -1295,8 +1351,15 @@ class Dikte:
         old one stood, on the same tab.
         """
         old = self.settings_window
-        if old is None:
+        if old is None or old._work_in_flight():
             return
+        home = getattr(self, "home_window", None)
+        home_visible = home is not None and home.isVisible()
+        home_mode = home.mode if home is not None else "dictation"
+        home_geometry = home.geometry() if home is not None else None
+        if home is not None:
+            home.close()
+            self.home_window = None
         tab = old.tabs.currentIndex()
         geometry = old.geometry()
         # Replaced rather than merely closed: left connected, _settings_closed
@@ -1313,9 +1376,28 @@ class Dikte:
         # window does not come up at the default size and jump.
         self.settings_window.setGeometry(geometry)
         self.settings_window.tabs.setCurrentIndex(tab)
+        self.settings_window.file_path = old.file_path
+        self.settings_window.file_label.setText(old.file_label.text())
+        self.settings_window.file_output.setPlainText(old.file_output.toPlainText())
+        self.settings_window.file_segments = getattr(old, "file_segments", [])
+        self.settings_window.file_save_srt.setEnabled(bool(self.settings_window.file_segments))
+        self.settings_window.file_status.setText(old.file_status.text())
         self.settings_window.show()
         self.settings_window.raise_()
         self.settings_window.activateWindow()
+        for signal, callback in (
+            (self.meetings.progress, old._on_minutes_progress),
+            (self.meetings.finished, old._on_minutes_finished),
+            (self.meetings.failed, old._on_minutes_failed),
+        ):
+            signal.disconnect(callback)
+        if home is not None:
+            self.home_window = HomeWindow(self, self.settings_window)
+            self.home_window.setGeometry(home_geometry)
+            self.home_window.show_mode(home_mode)
+            if home_visible:
+                self.home_window.show()
+            home.deleteLater()
 
     def _apply_local(self):
         """Pass the local settings on, and hold the models ready if asked to.
@@ -1353,10 +1435,13 @@ class Dikte:
 
     def _apply_settings(self):
         for indicator in (self.overlay, self.ask_overlay):
+            indicator.set_theme(self.conf["theme"])
             indicator.corner = self.conf["overlay_corner"]
             indicator.screen_name = self.conf["overlay_screen"]
             indicator.follow_pointer = self.conf["overlay_follows_pointer"]
         self._apply_local()
+        if getattr(self, "home_window", None) is not None:
+            self.home_window.refresh()
         self._build_tray()
         self._refresh_tray()
         # Taken once here for _external: the answer cannot change under a
@@ -1532,11 +1617,11 @@ def _hand_over(command):
     """Give the running instance the attention this start was asking for.
 
     A start carrying a verb forwards only that verb; a bare double start asks
-    for the Settings window as the sign of life the click was looking for.
+    for the daily workspace as the sign of life the click was looking for.
     Retried for a moment, because the copy that won the lock may not be
     listening yet.
     """
-    verb = command or "settings"
+    verb = command or "home"
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         if ipc.send(verb) is not None:
@@ -1563,7 +1648,7 @@ def run_app(args):
         if command:
             ipc.send(command)
         else:
-            ipc.send("settings")
+            ipc.send("home")
         return 0
 
     app = QApplication(sys.argv)
@@ -1638,13 +1723,12 @@ def run_app(args):
     server.newConnection.connect(on_connection)
     app.aboutToQuit.connect(dikte.shutdown)
 
-    # No key for the chosen transcription provider means nothing can work yet,
-    # so the settings window is the only useful thing to open.
-    # A transcription provider that cannot run yet, whether that is a missing
-    # API key or a model nobody has downloaded, means nothing can work, so the
-    # settings window is the only useful thing to open.
-    if command == "settings" or not dikte.conf.transcribe_ready():
+    # Explicit home requests and first setup open the daily workspace.
+    # A configured --gui background start stays quiet for login and restart.
+    if command == "settings":
         dikte.open_settings()
+    elif command == "home" or not dikte.conf.transcribe_ready():
+        dikte.open_home()
     elif command == "toggle":
         QTimer.singleShot(0, dikte.toggle)
     elif command == "ask":

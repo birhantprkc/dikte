@@ -49,6 +49,7 @@ UNUSED_QT = [
 analysis = Analysis(                            # noqa: F821
     [str(ROOT / "packaging" / "entry.py")],
     pathex=[str(ROOT)],
+    datas=[(str(ROOT / "dikte" / "icons" / "*.svg"), "dikte/icons")],
     hiddenimports=["PyQt6.QtNetwork"],
     # tkinter is the other GUI toolkit CPython ships and would be dead weight;
     # dikte's own tests have no business in a build at all.

@@ -418,6 +418,7 @@ da senin soracağın soruya verilecek bir yanıt yok.
   ve varsayımını bir yan cümlede söyle"""
 
 DEFAULTS = {
+    "theme": "nord",
     "ui_language": "auto",          # auto | tr | en
     "openai_api_key": "",
     "openai_base_url": "https://api.openai.com/v1",

@@ -6,13 +6,13 @@ import shutil
 import sys
 import threading
 
-from PyQt6.QtCore import QEvent, QObject, QRect, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QRect, Qt, QTimer, QUrl, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from . import __version__
@@ -32,6 +32,7 @@ from . import paste
 from . import update
 from .filetranscribe import FileTranscriber
 from .i18n import t
+from . import theme
 
 UI_LANGUAGES = [("Automatic (system)", "auto"), ("Turkish", "tr"), ("English", "en")]
 LANGUAGES = [
@@ -382,6 +383,8 @@ class LocalModelBox(QGroupBox):
         layout.setContentsMargins(0, 0, 0, 0)
         for index, widget in enumerate(widgets):
             layout.addWidget(widget, 1 if index == 0 else 0)
+        if widgets and all(isinstance(widget, QPushButton) for widget in widgets):
+            layout.addStretch()
         holder = QWidget()
         holder.setLayout(layout)
         return holder
@@ -397,13 +400,17 @@ class LocalModelBox(QGroupBox):
     def load(self, model, repo=""):
         """Show what is stored. What else is on offer is asked for on the way up.
 
-        Nothing is fetched here: building the settings window is not the same as
-        opening it, and a list nobody is looking at is not worth a request. What
-        is already on this disk is shown straight away either way.
+        Hidden boxes defer fetching until shown. A catalog already fetched for
+        this repository survives Apply; a visible box on a new repository
+        refreshes immediately. Installed files are available in either case.
         """
+        target_repo = repo or (ggml.suggested_llm()[0] if self._repos is not None else "")
+        reuse = self._answered and self._chosen_in == target_repo and self.repository() == target_repo
+        items = self._current_items() if reuse else []
+        self._later.stop()
         self._wanted = model
-        self._pending = True
-        self._answered = False
+        self._pending = not reuse
+        self._answered = reuse
         self._show_program()
         self._chosen_in = ""
         if self._repos is not None:
@@ -413,7 +420,10 @@ class LocalModelBox(QGroupBox):
             self.repo.setCurrentText(self._chosen_in)
             self.repo.blockSignals(False)
             self._fill_repos_box(suggested)
-        self._fill_models([])
+        self._fill_models(items)
+        if self._pending and self.isVisible():
+            self._pending = False
+            self._fetch_models(self.repository())
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -793,6 +803,10 @@ class LocalModelBox(QGroupBox):
 
     def _fill_models_from_current(self):
         """Redraw the rows without asking anybody anything again."""
+        self._wanted = self.selected()
+        self._fill_models(self._current_items())
+
+    def _current_items(self):
         # By name, because the recommended model has a row of its own at the
         # top as well as one in its group, and reading the rows back twice
         # would double it in the list every time a download finished.
@@ -802,8 +816,7 @@ class LocalModelBox(QGroupBox):
             if item is not None and item.name not in seen:
                 seen.add(item.name)
                 items.append(item)
-        self._wanted = self.selected()
-        self._fill_models(items)
+        return items
 
     def _delete(self):
         name = self.selected()
@@ -920,6 +933,7 @@ class SettingsWindow(QDialog):
         self._release_url = update.RELEASES_PAGE
         self.transcriber = FileTranscriber(conf, self)
         self.setWindowTitle(t("Dikte Settings"))
+        theme.apply(self, conf["theme"])
 
         # One for the whole window, parented to it so it outlives the boxes it
         # watches and goes when they do.
@@ -930,23 +944,46 @@ class SettingsWindow(QDialog):
         tabs.addTab(self._scrolled(self._display_tab()), t("Display"))
         self.api_tab_index = tabs.addTab(
             self._scrolled(self._api_tab()), t("API and models"))
-        tabs.addTab(self._scrolled(self._prompt_tab()), t("Cleanup rules"))
+        tabs.addTab(self._scrolled(self._prompt_tab()), t("Text editing and dictionary"))
         tabs.addTab(self._scrolled(self._assistant_tab()), t("Agent"))
         tabs.addTab(self._scrolled(self._meeting_tab()), t("Meeting"))
-        tabs.addTab(self._scrolled(self._minutes_tab()), t("Minutes"))
-        tabs.addTab(self._scrolled(self._file_tab()), t("Audio file"))
         tabs.addTab(self._scrolled(self._shortcut_tab()), t("Shortcuts"))
-        tabs.addTab(self._scrolled(self._history_tab()), t("History"))
+        self.task_pages = {
+            "file": self._scrolled(self._file_tab()),
+            "minutes": self._scrolled(self._minutes_tab()),
+            "history": self._scrolled(self._history_tab()),
+        }
+        for page in self.task_pages.values():
+            page.setParent(self)
+            page.hide()
+        retention = QGroupBox(t("History"))
+        retention_form = QFormLayout(retention)
+        retention_form.addRow(t("Keep at most"), self.history_limit)
+        general_layout = tabs.widget(0).widget().layout()
+        general_layout.addRow(retention)
+        tabs.tabBar().hide()
+        self.categories = QComboBox()
+        self.categories.setAccessibleName(t("Settings category"))
+        for index in range(tabs.count()):
+            self.categories.addItem(tabs.tabText(index))
+        self.categories.currentIndexChanged.connect(tabs.setCurrentIndex)
+        tabs.currentChanged.connect(self.categories.setCurrentIndex)
 
         # Save keeps the window open, so the window is closed with the titlebar
         # cross (or Escape) instead. A "Cancel" next to it would be a lie: the
         # settings are already on disk by then.
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save)
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText(t("Save"))
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(t("Apply changes"))
+        discard = buttons.addButton(t("Discard changes"), QDialogButtonBox.ButtonRole.ResetRole)
+        discard.clicked.connect(self._discard_changes)
+        self.dirty_label = QLabel("")
+        self.dirty_label.setObjectName("muted")
         buttons.accepted.connect(self._save)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.categories)
         layout.addWidget(tabs)
+        layout.addWidget(self.dirty_label)
         layout.addWidget(buttons)
         self._size_to_screen(680, 640)
 
@@ -967,6 +1004,26 @@ class SettingsWindow(QDialog):
             self.meetings.finished.connect(self._on_minutes_finished)
             self.meetings.failed.connect(self._on_minutes_failed)
         self._load()
+        for button in self.findChildren(QPushButton):
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        compact = self.tabs.findChildren(QSpinBox) + [
+            self.theme_choice,
+            self.ui_language, self.language, self.paste_shortcut, self.corner,
+            self.cleanup_reasoning, self.local_llm_reasoning,
+            self.assistant_reasoning, self.meeting_reasoning,
+        ]
+        for box in compact:
+            box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._saved_form = self._form_values()
+        for box in self.tabs.findChildren((QLineEdit, QComboBox, QCheckBox, QSpinBox, QPlainTextEdit)):
+            if isinstance(box, (QLineEdit, QPlainTextEdit)):
+                box.textChanged.connect(self._show_dirty)
+            elif isinstance(box, QComboBox):
+                box.currentTextChanged.connect(self._show_dirty)
+            elif isinstance(box, QCheckBox):
+                box.toggled.connect(self._show_dirty)
+            else:
+                box.valueChanged.connect(self._show_dirty)
         self._load_codex_models()
         self._load_agy_models()
         self._load_hosted_models()
@@ -986,6 +1043,64 @@ class SettingsWindow(QDialog):
         self._local_state_timer.setInterval(2000)
         self._local_state_timer.timeout.connect(self._show_local_state)
         self._show_local_state()
+
+    def _form_values(self):
+        values = []
+        for box in self.tabs.findChildren((QLineEdit, QComboBox, QCheckBox, QSpinBox, QPlainTextEdit)):
+            if isinstance(box, QPlainTextEdit):
+                if not box.isReadOnly():
+                    values.append(box.toPlainText())
+            elif isinstance(box, QLineEdit):
+                values.append(box.text())
+            elif isinstance(box, QComboBox):
+                value = box.currentData()
+                values.append(box.currentText() if value is None else value)
+            elif isinstance(box, QCheckBox):
+                values.append(box.isChecked())
+            else:
+                values.append(box.value())
+        models = dict(self._models)
+        provider = self.transcribe_provider.currentData()
+        if provider in models:
+            models[provider] = self.transcribe_model.currentText().strip()
+        values.append(models)
+        return values
+
+    def refresh_configuration(self):
+        """Reload clean forms while keeping unsaved edits for a later merge."""
+        if self._form_values() == self._saved_form:
+            self._load()
+            self._saved_form = self._form_values()
+            self._show_dirty()
+
+    def refresh_sources(self):
+        """Discover new devices without replacing an in-progress selection."""
+        self._sources = audio.list_sources()
+        monitors = audio.list_monitors()
+        for box, title, sources in (
+            (self.mic, "Default microphone", self._sources),
+            (self.meeting_mic, "Same as dictation", self._sources),
+            (self.meeting_system, "Current output", monitors),
+        ):
+            selected = box.currentData() or ""
+            with QSignalBlocker(box):
+                box.clear()
+                box.addItem(t(title), "")
+                for name, description in sources:
+                    box.addItem(description, name)
+                if selected and box.findData(selected) < 0:
+                    box.addItem(t("{name} (not connected)", name=selected), selected)
+                self._select_data(box, selected)
+        self._show_dirty()
+
+    def _show_dirty(self, *_):
+        dirty = self._form_values() != getattr(self, "_saved_form", [])
+        self.dirty_label.setText(t("Unsaved changes") if dirty else "")
+
+    def _discard_changes(self):
+        self._load()
+        self._saved_form = self._form_values()
+        self._show_dirty()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1036,8 +1151,10 @@ class SettingsWindow(QDialog):
         # that height on as the window's minimum, and a tall one (the API tab
         # is the tallest, and taller still under a large interface font) then
         # pushes Save off the bottom of the screen with no way to shrink back.
+        page.setMaximumWidth(680)
         area = QScrollArea()
         area.setWidgetResizable(True)
+        area.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         area.setFrameShape(QScrollArea.Shape.NoFrame)
         area.setWidget(page)
         for box in page.findChildren((QComboBox, QAbstractSpinBox)):
@@ -1160,6 +1277,13 @@ class SettingsWindow(QDialog):
     def _display_tab(self):
         page = QWidget()
         form = QFormLayout(page)
+
+        self.theme_choice = QComboBox()
+        for name, label in theme.NAMES.items():
+            self.theme_choice.addItem(t(label), name)
+        self.theme_choice.currentIndexChanged.connect(
+            lambda: theme.apply(self, self.theme_choice.currentData()))
+        form.addRow(t("Theme"), self.theme_choice)
 
         self.indicator_screen = QComboBox()
         # The active screen rather than the pointer, for the reason in
@@ -1477,6 +1601,7 @@ class SettingsWindow(QDialog):
                         "glossary, so it can repair the ones that still come out wrong."))
         hint.setWordWrap(True)
         layout.addWidget(hint)
+        layout.addWidget(QLabel(t("Dictionary")))
         self.transcribe_prompt = QPlainTextEdit()
         self.transcribe_prompt.setMaximumHeight(90)
         layout.addWidget(self.transcribe_prompt)
@@ -1828,7 +1953,7 @@ class SettingsWindow(QDialog):
 
         self.minutes_list = QListWidget()
         self.minutes_list.setWordWrap(True)
-        self.minutes_list.setMaximumHeight(170)
+        self.minutes_list.setMaximumHeight(110)
         self.minutes_list.currentItemChanged.connect(self._show_minutes)
         layout.addWidget(self.minutes_list)
 
@@ -1839,6 +1964,7 @@ class SettingsWindow(QDialog):
         self.minutes_view = QPlainTextEdit()
         self.minutes_view.setReadOnly(True)
         self.minutes_view.setPlaceholderText(t("Pick a meeting to read it."))
+        self.minutes_view.setMinimumHeight(120)
         layout.addWidget(self.minutes_view, 1)
 
         copy = QPushButton(t("Copy"))
@@ -1861,10 +1987,10 @@ class SettingsWindow(QDialog):
         row = QHBoxLayout()
         row.addWidget(copy)
         row.addWidget(self.minutes_retry)
-        row.addStretch(1)
         row.addWidget(folder)
         row.addWidget(delete)
         row.addWidget(reload_)
+        row.addStretch()
         layout.addLayout(row)
         return page
 
@@ -2053,11 +2179,6 @@ class SettingsWindow(QDialog):
             "Once the history passes this many entries, the oldest one is dropped "
             "every time a new one arrives. Set it to 0 to keep everything."
         ))
-        limit_row = QHBoxLayout()
-        limit_row.addWidget(QLabel(t("Keep at most")))
-        limit_row.addWidget(self.history_limit)
-        limit_row.addStretch(1)
-        layout.addLayout(limit_row)
 
         copy = QPushButton(t("Copy selected to clipboard"))
         copy.clicked.connect(self._copy_history)
@@ -2070,10 +2191,13 @@ class SettingsWindow(QDialog):
         row = QHBoxLayout()
         row.addWidget(copy)
         row.addWidget(delete)
-        row.addStretch(1)
-        row.addWidget(clear)
-        row.addWidget(reload_)
+        row.addStretch()
         layout.addLayout(row)
+        more = QHBoxLayout()
+        more.addWidget(clear)
+        more.addWidget(reload_)
+        more.addStretch()
+        layout.addLayout(more)
         return page
 
     @staticmethod
@@ -2167,6 +2291,8 @@ class SettingsWindow(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         for index, widget in enumerate(widgets):
             layout.addWidget(widget, 1 if index == 0 else 0)
+        if widgets and all(isinstance(widget, QPushButton) for widget in widgets):
+            layout.addStretch()
         holder = QWidget()
         holder.setLayout(layout)
         return holder
@@ -2176,7 +2302,9 @@ class SettingsWindow(QDialog):
     def _load(self):
         conf = self.conf
         self._select_data(self.ui_language, conf["ui_language"])
-        self._select_data(self.mic, conf["mic_target"])
+        self._select_data(self.theme_choice, conf["theme"])
+        theme.apply(self, self.theme_choice.currentData())
+        self._select_source(self.mic, conf["mic_target"])
         self._select_data(self.language, conf["language"])
         self.auto_paste.setChecked(conf["auto_paste"])
         self.paste_shortcut.setCurrentText(conf["paste_shortcut"])
@@ -2269,8 +2397,8 @@ class SettingsWindow(QDialog):
             conf["assistant_prompt"] or self._loaded_defaults["assistant"]
         )
 
-        self._select_data(self.meeting_mic, conf["meeting_mic_target"])
-        self._select_data(self.meeting_system, conf["meeting_system_target"])
+        self._select_source(self.meeting_mic, conf["meeting_mic_target"])
+        self._select_source(self.meeting_system, conf["meeting_system_target"])
         self.meeting_self_name.setText(conf["meeting_self_name"])
         self.meeting_other_name.setText(conf["meeting_other_name"])
         self.meeting_participants.setPlainText(conf["meeting_participants"])
@@ -2285,9 +2413,11 @@ class SettingsWindow(QDialog):
             conf["meeting_prompt"] or self._loaded_defaults["meeting"]
         )
 
-        self.file_timestamps.setChecked(conf["file_timestamps"])
-        self.file_cleanup.setChecked(conf["file_cleanup"])
-        self.file_path = ""
+        with QSignalBlocker(self.file_timestamps), QSignalBlocker(self.file_cleanup):
+            self.file_timestamps.setChecked(conf["file_timestamps"])
+            self.file_cleanup.setChecked(conf["file_cleanup"])
+        if not hasattr(self, "file_path"):
+            self.file_path = ""
 
         for which, (box, _status, _missing) in self._shortcut_rows.items():
             box.setCurrentText(conf[hotkey.SHORTCUTS[which].setting])
@@ -2300,10 +2430,13 @@ class SettingsWindow(QDialog):
         self._refresh_assistant_status()
         self._load_history()
         self._load_minutes()
+        self._loaded_config = dict(conf.data)
 
     def _save(self):
         conf = self.conf
+        before = dict(conf.data)
         conf["ui_language"] = self.ui_language.currentData() or "auto"
+        conf["theme"] = self.theme_choice.currentData() or theme.DEFAULT
         conf["mic_target"] = self.mic.currentData() or ""
         conf["language"] = self.language.currentData() or "auto"
         conf["auto_paste"] = self.auto_paste.isChecked()
@@ -2450,12 +2583,18 @@ class SettingsWindow(QDialog):
                                   or hotkey.default_combo(which))
         conf["evdev_hotkey"] = self.evdev_enabled.isChecked()
         conf["history_limit"] = self.history_limit.value()
+        # A retained form may predate a CLI reload. Only its edits take priority;
+        # unchanged fields keep the current runtime value.
+        for key, value in before.items():
+            if conf.data.get(key) == self._loaded_config.get(key):
+                conf.data[key] = value
         try:
             conf.save()
         except OSError as exc:
             # An antivirus or a sync tool holding the file for a beat is a
             # message, not an exit: an exception out of a Qt slot takes the
             # whole application down.
+            conf.data = before
             QMessageBox.warning(self, "Dikte",
                                 t("Could not save the settings: {error}",
                                   error=exc))
@@ -2465,7 +2604,9 @@ class SettingsWindow(QDialog):
             cfg.trim_history(conf["history_limit"])
         except OSError as exc:
             print(f"dikte: could not trim the history ({exc})")
-        self._load_history()  # the trim may just have dropped rows from the list
+        self._load()
+        self._saved_form = self._form_values()
+        self._show_dirty()
         self.applied.emit()
         # conf.save() has switched the language t() speaks, so the message box
         # already answers in the new one; the labels around it were translated
@@ -2488,6 +2629,12 @@ class SettingsWindow(QDialog):
         return (self.transcriber.busy
                 or self.local_whisper._downloading
                 or self.local_llm._downloading)
+
+    @staticmethod
+    def _select_source(combo, value):
+        if value and combo.findData(value) < 0:
+            combo.addItem(t("{name} (not connected)", name=value), value)
+        SettingsWindow._select_data(combo, value)
 
     @staticmethod
     def _select_data(combo, value):

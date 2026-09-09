@@ -12,11 +12,17 @@ Python standart kütüphanesi (3.11 veya üstü) ve PyQt6.
 *[English README](README.md)*
 
 <p align="center">
-  <img src="docs/settings-general.webp" width="820" alt="Dikte ayarları, Genel sekmesi">
+  <img src="docs/home.webp" width="620" alt="Dikte, Nord teması">
+  <br><sub>Nord (varsayılan)</sub>
 </p>
+
+| Dracula | Klasik karanlık | Klasik beyaz |
+|---|---|---|
+| <img src="docs/home-dracula.webp" width="270" alt="Dikte, Dracula"> | <img src="docs/home-dark.webp" width="270" alt="Dikte, Klasik karanlık"> | <img src="docs/home-light.webp" width="270" alt="Dikte, Klasik beyaz"> |
 
 |  |  |
 |---|---|
+| <img src="docs/settings-general.webp" width="410" alt="Genel ve temalar"> | <img src="docs/settings-display.webp" width="410" alt="Nord, Dracula, dark, light"> |
 | <img src="docs/settings-api.webp" width="410" alt="API ve modeller"> | <img src="docs/settings-cleanup.webp" width="410" alt="Temizleme kuralları"> |
 | <img src="docs/settings-agent.webp" width="410" alt="Ajan"> | <img src="docs/settings-meeting.webp" width="410" alt="Toplantı"> |
 | <img src="docs/settings-audio-file.webp" width="410" alt="Ses dosyası"> | <img src="docs/settings-shortcuts.webp" width="410" alt="Kısayollar"> |

@@ -45,7 +45,7 @@ NOT_RUNNING = 3
 # Verbs that start the application when none is running, which is what a
 # shortcut registered with the desktop has always relied on: press the key on a
 # fresh login and Dikte comes up recording.
-GUI_VERBS = {"", "settings", "toggle", "ask", "meeting"}
+GUI_VERBS = {"", "home", "settings", "toggle", "ask", "meeting"}
 
 # Asking a process that is not there to stop, cancel or quit is not a failure;
 # it is already in the state that was asked for.
@@ -1275,7 +1275,7 @@ def build_parser():
     updates.set_defaults(func=cmd_update)
 
     leaf(subs, "status", "what it is doing right now").set_defaults(func=cmd_status)
-    for name, help_text in (("settings", "open the settings window"),
+    for name, help_text in (("home", "open Dikte"), ("settings", "open the settings window"),
                             ("restart", "reload the running instance"),
                             ("quit", "shut it down")):
         leaf(subs, name, help_text).set_defaults(func=cmd_plain)
@@ -1306,8 +1306,8 @@ def run(argv):
                 pass
     parser = build_parser()
     opts = parser.parse_args(argv)
-    # No verb at all is the plain `dikte`, which means the settings window.
-    opts.verb = opts.verb or ""
+    # No verb opens the daily workspace; settings remains an explicit verb.
+    opts.verb = opts.verb or "home"
     # Every path here either talks over the socket or drives one of the workers,
     # and both want an event loop under them; a window is what none of them want.
     _app = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])

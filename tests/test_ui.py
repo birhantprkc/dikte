@@ -179,10 +179,11 @@ class Settings(DikteTest):
                            Qt.KeyboardModifier.NoModifier,
                            Qt.ScrollPhase.NoScrollPhase, False)
 
-    def test_the_window_opens_with_every_tab_on_it(self):
+    def test_settings_keeps_configuration_and_exposes_separate_task_pages(self):
         window = self.window(cfg.Config())
         tabs = window.findChildren(settings_ui.QTabWidget)[0]
-        self.assertEqual(tabs.count(), 10)
+        self.assertEqual(tabs.count(), 7)
+        self.assertEqual(set(window.task_pages), {"file", "minutes", "history"})
         self.assertEqual(window.windowTitle(), "Dikte Settings")
 
     def test_no_tab_can_stretch_the_window_past_a_small_screen(self):
@@ -1198,7 +1199,7 @@ class Overlay(DikteTest):
                 mock.patch.object(QApplication, "screenAt") as screen_at:
             widget._reposition()
         screen_at.assert_not_called()
-        self.assertEqual(widget.pos(), QPoint(1948, 995))
+        self.assertEqual(widget.pos(), QPoint(1948, 1003))
 
     def _screen(self, name, area):
         screen = mock.Mock()
@@ -1224,7 +1225,7 @@ class Overlay(DikteTest):
                 mock.patch.object(QApplication, "screenAt") as screen_at:
             widget._reposition()
         screen_at.assert_not_called()
-        self.assertEqual(widget.pos(), QPoint(1948, 995))
+        self.assertEqual(widget.pos(), QPoint(1948, 1003))
 
     def test_the_pointer_decides_when_the_compositor_will_not_say(self):
         """Every desktop but Plasma, and Plasma while KWin is being replaced."""
@@ -1236,7 +1237,7 @@ class Overlay(DikteTest):
                                   return_value=screens[0]) as screen_at:
             widget._reposition()
         screen_at.assert_called()
-        self.assertEqual(widget.pos(), QPoint(28, 995))
+        self.assertEqual(widget.pos(), QPoint(28, 1003))
 
     def _two_screens(self):
         return [self._screen("DP-1", settings_ui.QRect(0, 0, 1920, 1080)),
@@ -1258,10 +1259,10 @@ class Overlay(DikteTest):
         with mock.patch.object(overlay_module, "_kwin", kwin), \
                 mock.patch.object(QApplication, "screens", return_value=screens):
             widget.show_recording()
-        self.assertEqual(widget.pos(), QPoint(1948, 995))
+        self.assertEqual(widget.pos(), QPoint(1948, 1003))
         kwin.call.return_value.arguments.return_value = ["DP-1"]
         self._ticks_on(widget, screens, kwin)
-        self.assertEqual(widget.pos(), QPoint(28, 995))
+        self.assertEqual(widget.pos(), QPoint(28, 1003))
 
     def test_it_stays_where_it_appeared_unless_it_was_told_otherwise(self):
         """Left off, because an indicator that jumps desks mid-sentence is one
@@ -1274,7 +1275,7 @@ class Overlay(DikteTest):
             widget.show_recording()
         kwin.call.return_value.arguments.return_value = ["DP-1"]
         self._ticks_on(widget, screens, kwin)
-        self.assertEqual(widget.pos(), QPoint(1948, 995))
+        self.assertEqual(widget.pos(), QPoint(1948, 1003))
 
     def test_a_named_screen_is_never_left_for_the_pointer(self):
         """Naming one is the whole answer; following it would undo the naming."""
@@ -1285,7 +1286,7 @@ class Overlay(DikteTest):
             widget.show_recording()
         self._ticks_on(widget, screens, kwin)
         kwin.call.assert_not_called()
-        self.assertEqual(widget.pos(), QPoint(28, 995))
+        self.assertEqual(widget.pos(), QPoint(28, 1003))
 
     def test_the_one_on_top_goes_where_the_one_underneath_is(self):
         """Asking for itself would put the pair on two monitors, with this one
@@ -1299,8 +1300,8 @@ class Overlay(DikteTest):
             kwin.call.return_value.arguments.return_value = ["DP-1"]
             second = self.overlay(below=first)
             second.show_busy("Asking Claude…")
-        self.assertEqual(first.pos(), QPoint(1948, 995))
-        self.assertEqual(second.pos(), QPoint(1948, 929))
+        self.assertEqual(first.pos(), QPoint(1948, 1003))
+        self.assertEqual(second.pos(), QPoint(1948, 945))
 
     def test_the_compositor_is_asked_only_now_and_then(self):
         """Every tick would be thirty conversations a second about a hand
@@ -1404,6 +1405,7 @@ class LocalModels(DikteTest):
 
     def setUp(self):
         super().setUp()
+        self.enterContext(mock.patch.object(settings_ui.LocalModelBox, "_fetch_models"))
         # A machine Dikte is actually installed on would otherwise answer the
         # "nothing can transcribe" question from its real binary and model.
         self.patch_attr(ggml, "BIN_DIR", self.path("bin"))
@@ -1687,6 +1689,25 @@ class LocalModels(DikteTest):
             time.sleep(0.05)
             _app.processEvents()
         self.assertEqual(fetch.call_count, 1)
+
+    def test_reloading_settings_keeps_the_fetched_model_choices(self):
+        repo = "ggml-org/SmolLM3-3B-GGUF"
+        box = self.window(self.config(local_llm_repo=repo)).local_llm
+        box._on_listed([("models", [self._item("first.gguf"), self._item("second.gguf")], repo)], "")
+        box.load("first.gguf", repo)
+        self.assertGreaterEqual(box.model.findData("second.gguf"), 0)
+        self.assertEqual(box.selected(), "first.gguf")
+
+    def test_reload_before_repository_debounce_does_not_reuse_previous_catalog(self):
+        first_repo = "ggml-org/SmolLM3-3B-GGUF"
+        second_repo = "ggml-org/gemma-3-4b-it-GGUF"
+        box = self.window(self.config(local_llm_repo=first_repo)).local_llm
+        box._on_listed([("models", [self._item("first.gguf"), self._item("second.gguf")], first_repo)], "")
+        box.repo.setCurrentText(second_repo)
+        box.load("first.gguf", second_repo)
+        self.assertLess(box.model.findData("second.gguf"), 0)
+        self.assertTrue(box._pending)
+        self.assertFalse(box._answered)
     def test_the_models_are_grouped_by_the_model_rather_than_by_size(self):
         # Sorted by size alone, the turbo files land between the two medium
         # ones, half a screen from the model they are a copy of.

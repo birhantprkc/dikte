@@ -148,8 +148,8 @@ class Parser(unittest.TestCase):
     def parse(self, *argv):
         return cli.build_parser().parse_args(list(argv))
 
-    def test_no_verb_at_all_is_the_settings_window(self):
-        # argparse leaves the dest as None; run() is what turns it into "".
+    def test_no_verb_uses_the_plain_gui_command(self):
+        # argparse leaves the dest as None; run() selects home.
         opts = self.parse()
         self.assertIsNone(opts.verb)
         self.assertEqual(opts.func, cli.cmd_plain)
@@ -700,9 +700,13 @@ class WithoutAnInstance(DikteTest):
         launch.assert_called_once_with("toggle")
 
     def test_every_verb_that_opens_a_window_can_start_it(self):
-        for verb in ("settings", "toggle", "ask", "meeting"):
+        for verb in ("home", "settings", "toggle", "ask", "meeting"):
             with self.subTest(verb=verb):
                 self.assertTrue(self.run_verb([verb])[3].called)
+
+    def test_bare_command_opens_the_daily_workspace(self):
+        _, _, _, launch = self.run_verb([])
+        launch.assert_called_once_with("home")
 
     def test_a_verb_asked_to_wait_starts_nothing(self):
         """There would be no run to wait for; the process would just be replaced."""
