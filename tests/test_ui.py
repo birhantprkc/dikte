@@ -16,7 +16,7 @@ from unittest import mock
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QWheelEvent
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QComboBox, QMessageBox, QSpinBox, QWidget
 
 from dikte import audio
 from dikte import cleanup
@@ -229,6 +229,51 @@ class Settings(DikteTest):
         box.setFocus()
         QApplication.sendEvent(box, self.wheel())
         self.assertNotEqual(box.currentIndex(), before)
+
+    def test_the_wheel_uses_remembered_focus_in_an_inactive_window(self):
+        # Keep the window hidden so no desktop activation policy can give it
+        # keyboard focus. Its remembered focus still selects the wheel target.
+        for widget_type in (QComboBox, QSpinBox):
+            with self.subTest(widget=widget_type.__name__):
+                window = QWidget()
+                self.addCleanup(window.deleteLater)
+                box = widget_type(window)
+                other = QComboBox(window)
+                if isinstance(box, QComboBox):
+                    box.addItems(["first", "second", "third"])
+                    box.setCurrentIndex(1)
+                    value = box.currentIndex
+                else:
+                    box.setValue(5)
+                    value = box.value
+                box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                guard = settings_ui.WheelGuard(window)
+                box.installEventFilter(guard)
+                box.setFocus()
+                self.assertFalse(window.isActiveWindow())
+                self.assertFalse(box.hasFocus())
+                self.assertIs(window.focusWidget(), box)
+                before = value()
+                QApplication.sendEvent(box, self.wheel())
+                self.assertNotEqual(value(), before)
+                other.setFocus()
+                self.assertIs(window.focusWidget(), other)
+                before = value()
+                rolled = self.wheel()
+                QApplication.sendEvent(box, rolled)
+                self.assertEqual(value(), before)
+                self.assertFalse(rolled.isAccepted())
+
+    def test_the_wheel_is_refused_when_another_widget_has_focus(self):
+        window = self.window(cfg.Config())
+        box = window.ui_language
+        other = window.corner
+        other.setFocus()
+        before = box.currentIndex()
+        rolled = self.wheel()
+        QApplication.sendEvent(box, rolled)
+        self.assertEqual(box.currentIndex(), before)
+        self.assertFalse(rolled.isAccepted())
 
     def test_a_wrapped_label_keeps_the_room_its_lines_need(self):
         # The program path shares a row with a button, and a row is measured
