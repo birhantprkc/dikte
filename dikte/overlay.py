@@ -9,33 +9,18 @@ from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QF
 from PyQt6.QtWidgets import QWidget, QApplication
 
 from . import mac_window
+from . import theme
 
 BARS = 22
-HEIGHT = 56
+HEIGHT = 48
 MIN_WIDTH = 210
 MAX_WIDTH = 460
 MARGIN = 28
 GAP = 10        # between two indicators sharing a corner
 FOLLOW_EVERY = 8   # ticks between two looks for the pointer: about four a second
 
-BG = QColor(22, 24, 29, 238)
-BORDER = QColor(255, 255, 255, 28)
-TEXT = QColor(235, 237, 242)
-MUTED = QColor(150, 156, 168)
-REC = QColor(240, 78, 82)
-BUSY = QColor(120, 170, 255)
-OK = QColor(80, 205, 140)
-ERR = QColor(240, 100, 90)
-WARN = QColor(240, 180, 80)
-THEM = QColor(110, 190, 255)   # the other side of a meeting
-
-ASK = QColor(150, 140, 255)    # recording a command rather than a dictation
-# Recording, but nothing is going in. The same amber a warning gets, and for
-# the same reason: it is the colour that stops you walking away from it.
-HELD = WARN
-
-STATE_COLORS = {"recording": REC, "asking": ASK, "meeting": REC, "busy": BUSY,
-                "done": OK, "warning": WARN, "error": ERR}
+STATE_ROLES = {"recording": "rec", "asking": "ask", "meeting": "rec", "busy": "accent",
+               "done": "ok", "warning": "warn", "error": "err"}
 LIVE = ("recording", "asking", "meeting")
 
 
@@ -94,8 +79,9 @@ class Overlay(QWidget):
     under way at the same time and still both be visible."""
 
     def __init__(self, corner="bottom-left", below=None, dismissable=False,
-                 screen_name="", follow_pointer=False):
+                 screen_name="", follow_pointer=False, theme_name=theme.DEFAULT):
         super().__init__(None)
+        self.set_theme(theme_name)
         self.corner = corner
         self.screen_name = screen_name
         # Whether it goes on following the pointer once it is up, rather than
@@ -388,6 +374,15 @@ class Overlay(QWidget):
 
     # ---- painting --------------------------------------------------
 
+    def set_theme(self, name):
+        self.colors = {key: QColor(value) for key, value in theme.palette(name).items()}
+        states = (dict(rec="#D52E3F", ok="#187B4B", err="#BD2735", warn="#946000",
+                       them="#2460A0", ask="#7048B4") if name == "light" else
+                  dict(rec="#F04E52", ok="#50CD8C", err="#F0645A", warn="#F0B450",
+                       them="#6EBEFF", ask="#968CFF"))
+        self.colors.update({key: QColor(value) for key, value in states.items()})
+        self.update()
+
     def paintEvent(self, _event):
         if self.state == "hidden":
             return  # translucent window, nothing drawn means nothing shown
@@ -397,14 +392,14 @@ class Overlay(QWidget):
         rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
 
         path = QPainterPath()
-        path.addRoundedRect(rect, 15, 15)
-        painter.fillPath(path, BG)
-        painter.setPen(QPen(BORDER, 1))
+        path.addRoundedRect(rect, 12, 12)
+        painter.fillPath(path, self.colors["base"])
+        painter.setPen(QPen(self.colors["border"], 1))
         painter.drawPath(path)
 
-        accent = STATE_COLORS.get(self.state, MUTED)
+        accent = self.colors[STATE_ROLES.get(self.state, "muted")]
         if self._held:
-            accent = HELD
+            accent = self.colors["warn"]
         self._draw_indicator(painter, accent)
 
         if self.state in LIVE:
@@ -480,13 +475,13 @@ class Overlay(QWidget):
         gap = (right - left - BARS * bar_w) / max(1, BARS - 1)
         return left, bar_w, bar_w + gap
 
-    @staticmethod
-    def _bar_colour(shaped, accent):
-        color = QColor(accent if shaped > 0.04 else MUTED)
+    def _bar_colour(self, shaped, accent):
+        color = QColor(accent if shaped > 0.04 else self.colors["muted"])
         color.setAlphaF(0.35 + 0.65 * min(1.0, shaped * 2.2))
         return color
 
-    def _draw_waveform(self, painter, accent=REC):
+    def _draw_waveform(self, painter, accent=None):
+        accent = accent if accent is not None else self.colors["rec"]
         if self.state == "meeting":
             self._draw_dual_waveform(painter)
             return
@@ -512,7 +507,7 @@ class Overlay(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         for i, (mine, theirs) in enumerate(zip(self.levels, self.levels2)):
             x = left + i * step
-            for level, accent, up in ((mine, REC, True), (theirs, THEM, False)):
+            for level, accent, up in ((mine, self.colors["rec"], True), (theirs, self.colors["them"], False)):
                 shaped = min(1.0, level ** 0.55)
                 h = 2.0 + shaped * 12.0
                 y = mid - 1.5 - h if up else mid + 1.5
@@ -524,7 +519,7 @@ class Overlay(QWidget):
         font.setPointSizeF(10.0)
         font.setFamilies(["monospace"])
         painter.setFont(font)
-        painter.setPen(MUTED)
+        painter.setPen(self.colors["muted"])
         mins, secs = divmod(int(self.seconds), 60)
         hours, mins = divmod(mins, 60)
         text = f"{hours}:{mins:02d}:{secs:02d}" if hours else f"{mins}:{secs:02d}"
@@ -543,7 +538,7 @@ class Overlay(QWidget):
         """A faint cross on the right: without it there is nothing to say the
         box can be clicked away, and a feature nobody can see is not one."""
         cx, cy = self.width() - 18.0, self.height() / 2
-        pen = QPen(QColor(MUTED), 1.6)
+        pen = QPen(QColor(self.colors["muted"]), 1.6)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -552,7 +547,7 @@ class Overlay(QWidget):
 
     def _draw_message(self, painter):
         painter.setFont(self._label_font())
-        painter.setPen({"error": ERR, "warning": WARN}.get(self.state, TEXT))
+        painter.setPen({"error": self.colors["err"], "warning": self.colors["warn"]}.get(self.state, self.colors["text"]))
         # Leave the cross its corner rather than running the text under it.
         box = QRectF(46, 0, self.width() - 60 - (18 if self._can_dismiss else 0),
                      self.height())
