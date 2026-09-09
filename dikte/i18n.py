@@ -68,7 +68,7 @@ TR = {
     "Local CPU": "Yerel CPU",
     "Model not selected": "Model seçilmedi",
     "{name} default model": "{name} varsayılan modeli",
-    "Audio: {sound} / Text: {text}": "Ses: {sound} / Metin: {text}",
+    "Dictation: {sound} / Cleanup: {text}": "Dikte: {sound} / Temizleme: {text}",
     "Minutes: {model}": "Tutanak: {model}",
     "Assistant: {model}": "Asistan: {model}",
     "Completed with a warning: {error}": "Uyarıyla tamamlandı: {error}",

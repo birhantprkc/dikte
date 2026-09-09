@@ -100,7 +100,7 @@ def processing_locations(conf, mode="dictation", file_cleanup=None, file_timesta
     if provider in ("codex", "agy") and not conf[f"cleanup_{provider}_model"].strip():
         model = t("{name} default model", name="Codex" if provider == "codex" else "Antigravity")
     text = _model_location(model, provider, local.get("llama")) if enabled else t("Editing off")
-    location = t("Audio: {sound} / Text: {text}", sound=sound, text=text)
+    location = t("Dictation: {sound} / Cleanup: {text}", sound=sound, text=text)
     if mode == "meeting":
         location += " / " + t("Minutes: {model}", model=_model_location(conf["meeting_model"], "openrouter"))
     elif mode == "ask":

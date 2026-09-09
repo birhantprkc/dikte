@@ -74,15 +74,30 @@ QComboBox::drop-down {
     width: 26px; border: none; background: transparent;
 }
 QComboBox::down-arrow { image: url("__ICONS__/chevron-down@arrow_suffix.svg"); width: 12px; height: 12px; }
-QSpinBox { padding-right: 28px; min-height: 18px; }
+QSpinBox { padding: 2px 20px 2px 6px; min-height: 18px; }
+QSpinBox > QLineEdit { border: none; background: transparent; padding: 0; }
 QSpinBox::up-button, QSpinBox::down-button {
-    subcontrol-origin: border; width: 26px; border: none; background: transparent;
+    subcontrol-origin: border; width: 20px; border: none; background: transparent;
 }
 QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 5px; }
 QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 5px; }
 QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: @border; }
 QSpinBox::up-arrow { image: url("__ICONS__/chevron-up@arrow_suffix.svg"); width: 10px; height: 10px; }
 QSpinBox::down-arrow { image: url("__ICONS__/chevron-down@arrow_suffix.svg"); width: 10px; height: 10px; }
+QCheckBox { spacing: 7px; }
+QCheckBox::indicator {
+    width: 14px; height: 14px; border: 1px solid @border;
+    border-radius: 4px; background: @surface;
+}
+QCheckBox::indicator:hover { border-color: @accent; }
+QCheckBox::indicator:checked {
+    background: @accent; border-color: @accent;
+    image: url("__ICONS__/check@arrow_suffix.svg");
+}
+QCheckBox:focus::indicator { border-color: @text; }
+QCheckBox:disabled { color: @disabled_text; }
+QCheckBox::indicator:disabled { background: @disabled_bg; border-color: @disabled_text; }
+QCheckBox::indicator:checked:disabled { background: @disabled_text; }
 QComboBox QAbstractItemView { background: @surface; color: @text; selection-background-color: @border; }
 QTabWidget::pane { border: none; }
 QTabBar::tab { background: @surface; padding: 10px; }

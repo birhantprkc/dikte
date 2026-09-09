@@ -390,7 +390,8 @@ class Home(DikteTest):
         i18n.set_language("tr")
         self.window.refresh()
         self.assertEqual(self.window.capture_status.text(), "Konuşmaya hazır")
-        self.assertIn("Ses:", self.window.capture_models.text())
+        self.assertIn("Dikte:", self.window.capture_models.text())
+        self.assertIn("Temizleme:", self.window.capture_models.text())
 
     def test_completed_run_refreshes_workspace_without_changing_controller_state(self):
         controller = Dikte.__new__(Dikte)
