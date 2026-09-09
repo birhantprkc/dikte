@@ -49,6 +49,11 @@ def item(name, data, url="https://example.invalid/f", sha=True):
                     hashlib.sha256(data).hexdigest() if sha else "")
 
 
+def listed(name, size):
+    """A row as a listing hands it over: a name and a size, no bytes."""
+    return hub.Item(name, f"https://example.invalid/{name}", size, "a" * 64)
+
+
 @contextlib.contextmanager
 def serving(release, archive):
     """Answer by what is being asked for rather than by what came before.
@@ -205,6 +210,7 @@ class InstallProgram(Local):
         # These fixtures are Ubuntu release archives.  Keep checking that path
         # on every host, including the Mac that checks the macOS backend.
         self.patch_attr(sys, "platform", "linux")
+        self.patch_attr(ggml.platform, "machine", lambda: "x86_64")
         # Built once, because the release listing has to publish its checksum
         # and a tarball is not the same bytes twice.
         self.archive = tarball({
@@ -221,6 +227,7 @@ class InstallProgram(Local):
 
     def install(self, *names, archive=None):
         self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: False)
         blob = self.archive if archive is None else archive
         with serving(self.release(*names, archive=blob), blob) as calls:
             path = ggml.install_program(ggml.WHISPER)
@@ -237,6 +244,162 @@ class InstallProgram(Local):
         _, urls = self.install("whisper-bin-x64.zip", "whisper-bin-ubuntu-arm64.tar.gz",
                                "whisper-bin-ubuntu-x64.tar.gz")
         self.assertTrue(urls[1].endswith("whisper-bin-ubuntu-x64.tar.gz"))
+
+    def test_the_nightly_pointer_is_followed_to_where_the_builds_are(self):
+        """llama.cpp's latest release carries a tag name, not the binaries."""
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: False)
+        marker = self.release(ggml.NIGHTLY_TAG)
+        nightly = dict(self.release("llama-b10809-bin-ubuntu-x64.tar.gz"),
+                       tag_name="b10809")
+
+        def opener(request, timeout=None):
+            url = request.full_url
+            if url.endswith("/releases/latest"):
+                return json_body(marker)
+            if url.endswith("/releases/tags/b10809"):
+                return json_body(nightly)
+            if url.endswith(ggml.NIGHTLY_TAG):
+                return body(b"b10809\n")
+            return body(self.archive)
+
+        with mock.patch("urllib.request.urlopen", side_effect=opener):
+            tag, found = ggml._pick_asset(ggml.LLAMA)
+        self.assertEqual(tag, "b10809")
+        self.assertEqual(found.name, "llama-b10809-bin-ubuntu-x64.tar.gz")
+
+    def test_without_a_pointer_the_newest_release_that_has_a_build_is_taken(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: False)
+        marker = self.release("source.zip")
+        listing = [dict(self.release("llama-b2-bin-win-cpu-x64.zip"), tag_name="b2"),
+                   dict(self.release("llama-b1-bin-ubuntu-x64.tar.gz"), tag_name="b1")]
+
+        def opener(request, timeout=None):
+            url = request.full_url
+            return json_body(listing if "per_page" in url else marker)
+
+        with mock.patch("urllib.request.urlopen", side_effect=opener):
+            tag, found = ggml._pick_asset(ggml.LLAMA)
+        self.assertEqual(tag, "b1")
+        self.assertEqual(found.name, "llama-b1-bin-ubuntu-x64.tar.gz")
+    def test_linux_x64_with_vulkan_takes_diktes_accelerated_build(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-vulkan-x64.tar.gz")
+        listing["tag_name"] = "whisper.cpp-v1.9.3"
+        managed_sha = hashlib.sha256(self.archive).hexdigest()
+        with mock.patch.object(ggml, "MANAGED_WHISPER_SHA256", managed_sha,
+                               create=True):
+            with fake_urlopen(listing, body(self.archive)) as calls:
+                path = ggml.install_program(ggml.WHISPER)
+        urls = [call.full_url for call in calls]
+        self.assertIn(
+            "/repos/yusufipk/dikte/releases/tags/whisper.cpp-v1.9.3",
+            urls[0],
+        )
+        self.assertTrue(urls[1].endswith(
+            "whisper-bin-ubuntu-vulkan-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual("v1.9.3", ggml.installed_version(ggml.WHISPER))
+        self.assertFalse(ggml.vulkan_missing(ggml.WHISPER))
+
+    def test_an_explicit_whisper_version_still_comes_from_upstream(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(listing, body(self.archive)) as calls:
+            ggml.install_program(ggml.WHISPER, tag="v1.9.1")
+        self.assertIn(
+            "/repos/ggml-org/whisper.cpp/releases/tags/v1.9.1",
+            calls[0].full_url,
+        )
+
+    def test_linux_arm64_keeps_using_the_upstream_cpu_build(self):
+        self.patch_attr(ggml, "_arch", lambda: "arm64")
+        self.patch_attr(ggml.platform, "machine", lambda: "aarch64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-arm64.tar.gz")
+        with fake_urlopen(listing, body(self.archive)) as calls:
+            ggml.install_program(ggml.WHISPER)
+        self.assertIn(
+            "/repos/ggml-org/whisper.cpp/releases/latest",
+            calls[0].full_url,
+        )
+
+    def test_linux_non_x86_does_not_try_the_managed_x64_build(self):
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        listing = self.release("whisper-bin-ubuntu-arm64.tar.gz")
+        with mock.patch("platform.machine", return_value="ppc64le"):
+            with fake_urlopen(listing, listing) as calls:
+                with self.assertRaises(ggml.LocalError):
+                    ggml.install_program(ggml.WHISPER)
+        self.assertIn(
+            "/repos/ggml-org/whisper.cpp/releases/latest",
+            calls[0].full_url,
+        )
+
+    def test_a_missing_managed_build_falls_back_to_upstream_cpu(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        managed = self.release("Dikte-1.1.0-x86_64.AppImage")
+        managed["tag_name"] = "whisper.cpp-v1.9.3"
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(managed, upstream, body(self.archive)) as calls:
+            path = ggml.install_program(ggml.WHISPER)
+        urls = [call.full_url for call in calls]
+        self.assertIn(
+            "/repos/yusufipk/dikte/releases/tags/whisper.cpp-v1.9.3",
+            urls[0],
+        )
+        self.assertIn("/repos/ggml-org/whisper.cpp/releases/latest", urls[1])
+        self.assertTrue(urls[2].endswith("whisper-bin-ubuntu-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
+
+    def test_a_managed_build_with_an_unreviewed_digest_falls_back(self):
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        managed = self.release("whisper-bin-ubuntu-vulkan-x64.tar.gz")
+        managed["assets"][0]["digest"] = "sha256:" + "0" * 64
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(managed, upstream, body(self.archive)) as calls:
+            try:
+                path = ggml.install_program(ggml.WHISPER)
+            except ggml.LocalError as exc:
+                self.fail(f"unreviewed digest did not fall back: {exc}")
+        urls = [call.full_url for call in calls]
+        self.assertEqual(3, len(urls))
+        self.assertTrue(urls[2].endswith("whisper-bin-ubuntu-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
+
+    def test_an_unavailable_managed_release_falls_back_to_upstream_cpu(self):
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(http_error(404), upstream,
+                          body(self.archive)) as calls:
+            path = ggml.install_program(ggml.WHISPER)
+        self.assertEqual(3, len(calls))
+        self.assertTrue(calls[2].full_url.endswith(
+            "whisper-bin-ubuntu-x64.tar.gz"))
+        self.assertTrue(os.path.isfile(path))
+
+    def test_a_fallback_to_the_processor_build_is_there_to_be_shown(self):
+        """Until the Vulkan package is published every download lands the
+        processor build, and a graphics card sitting idle looks exactly like
+        one being used. The window asks this and says so."""
+        self.patch_attr(ggml, "_arch", lambda: "x64")
+        self.patch_attr(ggml, "_has_vulkan", lambda: True)
+        managed = self.release("Dikte-1.1.0-x86_64.AppImage")
+        managed["tag_name"] = "whisper.cpp-v1.9.3"
+        upstream = self.release("whisper-bin-ubuntu-x64.tar.gz")
+        with fake_urlopen(managed, upstream, body(self.archive)):
+            ggml.install_program(ggml.WHISPER)
+        self.assertTrue(ggml.vulkan_missing(ggml.WHISPER))
+
+    def test_a_machine_with_no_vulkan_is_not_told_it_is_missing_one(self):
+        # Nothing was on offer to fall back from, so there is nothing to say.
+        self.install("whisper-bin-ubuntu-x64.tar.gz")
+        self.assertFalse(ggml.vulkan_missing(ggml.WHISPER))
 
     def test_a_release_with_nothing_for_this_machine_says_so(self):
         self.patch_attr(ggml, "_arch", lambda: "x64")
@@ -506,6 +669,53 @@ class Catalogue(Local):
             with self.assertRaises(ggml.LocalError):
                 ggml.whisper_models()
 
+    def test_the_speculative_decoding_heads_are_not_models(self):
+        # They are the small files in a repository, so a list sorted by size
+        # puts them first, where the eye lands and the click goes.
+        tree = GGUF_TREE + [
+            {"type": "file", "path": "dflash-Qwen3-8B-Q8_0.gguf",
+             "size": 1_120_000_000, "lfs": {"oid": "f" * 64}},
+            {"type": "file", "path": "eagle3-gpt-oss-20b-Q8_0.gguf",
+             "size": 920_000_000, "lfs": {"oid": "0" * 64}},
+        ]
+        with fake_urlopen(tree):
+            names = [q.name for q in ggml.llm_quants("ggml-org/x-GGUF")]
+        self.assertEqual(names,
+                         ["gemma-3-4b-it-Q4_K_M.gguf", "gemma-3-4b-it-Q8_0.gguf"])
+
+    def test_a_speech_or_vision_repository_is_not_a_cleanup_publisher(self):
+        listing = [{"id": "ggml-org/parakeet-GGUF"},
+                   {"id": "ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF"},
+                   {"id": "ggml-org/SmolVLM2-256M-Video-Instruct-GGUF"},
+                   {"id": "ggml-org/Qwen3-8B-Base-GGUF"},
+                   {"id": "ggml-org/SmolLM3-3B-GGUF"}]
+        with fake_urlopen(listing):
+            found = ggml.llm_repos()
+        self.assertEqual([r for r in found if r.startswith("ggml-org/Smol")],
+                         ["ggml-org/SmolLM3-3B-GGUF"])
+        self.assertNotIn("ggml-org/parakeet-GGUF", found)
+        self.assertNotIn("ggml-org/Qwen3-8B-Base-GGUF", found)
+
+    def test_a_publisher_is_not_dropped_for_a_word_it_happens_to_contain(self):
+        # The skip marks are matched as plain substrings, and an unanchored
+        # "test-" is also inside "Latest-".
+        self.assertTrue(ggml.can_clean("ggml-org/Qwen3-Latest-GGUF"))
+        self.assertFalse(ggml.can_clean("ggml-org/test-model-router-download"))
+
+    def test_a_base_model_beside_its_tuned_twin_is_dropped(self):
+        # Gemma names the base model after the tuned one with the `-it` taken
+        # out, so the two sit next to each other and the wrong one answers a
+        # cleanup prompt by carrying on writing the transcript.
+        listing = [{"id": "ggml-org/gemma-4-E2B-GGUF"},
+                   {"id": "ggml-org/gemma-4-E2B-it-GGUF"},
+                   {"id": "ggml-org/Qwen3-0.6B-GGUF"}]
+        with fake_urlopen(listing):
+            found = ggml.llm_repos()
+        self.assertNotIn("ggml-org/gemma-4-E2B-GGUF", found)
+        self.assertIn("ggml-org/gemma-4-E2B-it-GGUF", found)
+        # Nothing named it, so nothing says it is the wrong half of a pair.
+        self.assertIn("ggml-org/Qwen3-0.6B-GGUF", found)
+
     def test_what_is_on_disk_is_read_from_disk(self):
         self.assertEqual(ggml.installed_whisper_models(), [])
         path = ggml.whisper_model_path("ggml-base.bin")
@@ -573,7 +783,9 @@ STAND_IN = textwrap.dedent("""
 """)
 
 
-class Servers(Local):
+class ServerCase(Local):
+    """The stand-in server and the fixture around it, with no tests of its own."""
+
     def setUp(self):
         super().setUp()
         self.path("data").mkdir(parents=True, exist_ok=True)
@@ -596,6 +808,8 @@ class Servers(Local):
         self.addCleanup(made.stop)
         return made
 
+
+class Servers(ServerCase):
     def test_a_started_server_hands_back_its_address(self):
         server = self.server()
         url = server.serve()
@@ -827,6 +1041,122 @@ class Servers(Local):
         self.assertFalse(server.sweep())      # and the pid file went with it
 
 
+class IdleUnload(ServerCase):
+    """Giving the memory back when nothing has asked anything for a while."""
+
+    IDLE = 0.3
+
+    def setUp(self):
+        super().setUp()
+        # The real check runs every five seconds against a window of minutes.
+        # Both are scaled down here; what is being tested is the decision, and
+        # nothing in it reads the clock in units of its own.
+        self.patch_attr(ggml, "IDLE_CHECK_SECONDS", 0.05)
+
+    def idle_server(self, seconds=None, **settings):
+        server = self.server(**settings)
+        server.set_idle(self.IDLE if seconds is None else seconds)
+        return server
+
+    def wait_for(self, predicate, timeout=5.0):
+        """True as soon as `predicate` holds, False once the wait runs out."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_a_model_nobody_is_using_is_unloaded(self):
+        server = self.idle_server()
+        server.serve()
+        self.assertTrue(self.wait_for(lambda: not server.running))
+
+    def test_the_default_is_to_keep_it(self):
+        """A server nobody set a window on stays until something stops it."""
+        server = self.server()
+        server.serve()
+        self.assertFalse(self.wait_for(lambda: not server.running, timeout=0.6))
+
+    def test_a_window_of_zero_keeps_it_too(self):
+        server = self.idle_server(0)
+        server.serve()
+        self.assertFalse(self.wait_for(lambda: not server.running, timeout=0.6))
+
+    def test_a_request_in_flight_holds_the_model(self):
+        """A file is one address lookup and then minutes of work: the clock
+        alone would call that idle and unload it mid-transcription."""
+        server = self.idle_server()
+        server.serve()
+        with server.busy():
+            self.assertFalse(
+                self.wait_for(lambda: not server.running, timeout=self.IDLE * 3))
+        self.assertTrue(self.wait_for(lambda: not server.running))
+
+    def test_asking_for_the_address_puts_the_window_back(self):
+        server = self.idle_server()
+        first = server.serve()
+        for _ in range(4):
+            time.sleep(self.IDLE / 2)
+            self.assertEqual(server.serve(), first)   # never restarted
+        self.assertTrue(server.running)
+
+    def test_the_next_request_loads_it_again(self):
+        server = self.idle_server()
+        first = server.serve()
+        self.assertTrue(self.wait_for(lambda: not server.running))
+        second = server.serve()
+        self.assertTrue(server.running)
+        self.assertNotEqual(second, first)      # a new process, a new port
+
+    def test_the_watcher_of_a_stopped_server_does_not_touch_the_next_one(self):
+        server = self.idle_server()
+        server.serve()
+        server.stop()
+        server.set_idle(0)
+        server.serve()
+        self.assertFalse(self.wait_for(lambda: not server.running, timeout=0.6))
+
+    def test_unloading_by_hand_does_not_wait_for_the_window(self):
+        server = self.idle_server(0)
+        server.serve()
+        self.assertTrue(server.unload())
+        self.assertFalse(server.running)
+
+    def test_a_hold_taken_before_the_start_survives_it(self):
+        """The local cleanup takes the hold and only then asks for the address,
+        so the start it triggers must not be what drops the hold."""
+        server = self.idle_server()
+        with server.busy():
+            server.serve()
+            self.assertFalse(
+                self.wait_for(lambda: not server.running, timeout=self.IDLE * 3))
+        self.assertTrue(self.wait_for(lambda: not server.running))
+
+    def test_unloading_is_refused_while_the_model_is_still_loading(self):
+        """It runs on the interface's thread, and a start holds its lock for as
+        long as the load takes: waiting there would freeze the whole window."""
+        server = self.idle_server(0, extra=["--wait", "0.6"])
+        thread = threading.Thread(target=server.serve)
+        thread.start()
+        try:
+            began = time.monotonic()
+            self.assertFalse(server.unload())
+            self.assertLess(time.monotonic() - began, 0.2)
+        finally:
+            thread.join(timeout=10)
+
+    def test_unloading_is_refused_while_a_request_is_in_flight(self):
+        server = self.idle_server(0)
+        server.serve()
+        with server.busy():
+            self.assertFalse(server.unload())
+            self.assertTrue(server.running)
+
+    def test_unloading_nothing_is_not_a_refusal(self):
+        self.assertTrue(self.server().unload())
+
+
 class Arguments(Local):
     """What the two command lines say, since neither program is here to say it."""
 
@@ -1025,3 +1355,205 @@ class WindowsOwnership(Local):
         # from here", and only one of those makes the pid file safe to drop.
         self.image("")
         self.assertIsNone(self.made._is_ours(1234))
+
+
+class Machine(Local):
+    """What this machine can hold, and what that makes worth pointing at."""
+
+    def _sysconf(self, phys_pages, page_size=4096):
+        """Stand where sysconf answers whatever this test wants it to.
+
+        `create` because Windows has no os.sysconf at all, and a patch that
+        insists on the real attribute fails there before the test runs. What
+        the code under test does about that absence is two lines down from
+        what these are checking, and it is checked on its own below.
+        """
+        return mock.patch.object(
+            ggml.os, "sysconf", create=True,
+            side_effect=lambda name: (page_size if name == "SC_PAGE_SIZE"
+                                      else phys_pages))
+
+    def test_the_memory_is_read_the_way_each_system_reports_it(self):
+        # Linux and most Macs answer through sysconf.
+        with self._sysconf(4_194_304):
+            self.assertEqual(ggml.total_memory(), 16 * ggml.GB)
+
+    def test_a_mac_without_the_page_count_is_asked_for_the_number(self):
+        # Not every build of Python on a Mac carries SC_PHYS_PAGES, and a Mac
+        # that answered nothing would be a Mac with none of this on it.
+        def answer(args, **kwargs):
+            self.assertEqual(args, ["sysctl", "-n", "hw.memsize"])
+            return mock.Mock(stdout=f"{32 * ggml.GB}\n")
+
+        with mock.patch.object(ggml.os, "sysconf", create=True,
+                               side_effect=ValueError), \
+                mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(ggml.subprocess, "run", answer):
+            self.assertEqual(ggml.total_memory(), 32 * ggml.GB)
+
+    def test_a_sysconf_that_shrugs_is_an_unknown_machine_and_not_a_tiny_one(self):
+        # sysconf answers -1 for a limit it holds to be indeterminate and
+        # CPython hands that back rather than raising, so the product came out
+        # negative: a 64 GB workstation was told every model past 512 MB was
+        # too big for it, and the machine line read "Memory: -4096 B".
+        with self._sysconf(-1):
+            self.assertEqual(ggml.total_memory(), 0)
+        self.assertTrue(ggml.fits(574 << 20, memory=0))
+
+    def test_the_memory_is_read_once_and_kept(self):
+        # A list of thirty rows asks seventy times, and on the Mac path the
+        # answer comes from a program rather than a library call.
+        calls = []
+        with mock.patch.object(ggml, "_read_memory",
+                               lambda: calls.append(1) or 16 * ggml.GB):
+            self.assertEqual(ggml.total_memory(), 16 * ggml.GB)
+            self.assertEqual(ggml.total_memory(), 16 * ggml.GB)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_system_that_answers_nothing_is_an_unknown_machine(self):
+        with mock.patch.object(ggml.os, "sysconf", create=True,
+                               side_effect=ValueError), \
+                mock.patch.object(sys, "platform", "linux"):
+            self.assertEqual(ggml.total_memory(), 0)
+
+    def test_a_mac_is_taken_to_have_a_graphics_interface(self):
+        with mock.patch.object(sys, "platform", "darwin"):
+            self.assertEqual(ggml.accelerator(), "Metal")
+
+    def test_elsewhere_the_vulkan_loader_is_what_says_so(self):
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch.object(ggml.ctypes.util, "find_library",
+                                  lambda name: "/usr/lib/libvulkan.so.1"):
+            self.assertEqual(ggml.accelerator(), "Vulkan")
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch.object(ggml.ctypes.util, "find_library",
+                                  lambda name: None):
+            self.assertEqual(ggml.accelerator(), "")
+
+    def test_a_model_is_measured_against_half_the_memory(self):
+        self.assertTrue(ggml.fits(2 * ggml.GB, memory=8 * ggml.GB))
+        self.assertFalse(ggml.fits(4 * ggml.GB, memory=8 * ggml.GB))
+
+    def test_a_machine_whose_memory_could_not_be_read_holds_anything(self):
+        # A wrong "too big" is worse advice than none.
+        self.assertTrue(ggml.fits(40 * ggml.GB, memory=0))
+
+    def test_the_smallest_machine_is_not_the_one_where_everything_fits(self):
+        # Half of 2 GB less the gigabyte of overhead is nothing, and a budget
+        # of nothing used to read as the unknown machine above.
+        self.assertFalse(ggml.fits(3 * ggml.GB, memory=2 * ggml.GB))
+
+    def test_a_crowded_machine_is_pointed_at_the_smaller_model(self):
+        self.assertEqual(ggml.suggested_whisper(memory=3 * ggml.GB, graphics=""),
+                         ggml.SMALL_MACHINE_WHISPER)
+
+    def test_a_card_and_the_memory_for_it_are_pointed_at_the_accurate_one(self):
+        self.assertEqual(
+            ggml.suggested_whisper(memory=32 * ggml.GB, graphics="Vulkan"),
+            ggml.ACCURATE_WHISPER)
+
+    def test_memory_without_a_card_is_pointed_at_the_fast_one(self):
+        # Several times the work per second is several times a long wait on a
+        # processor, whatever there is room for.
+        self.assertEqual(
+            ggml.suggested_whisper(memory=32 * ggml.GB, graphics=""),
+            ggml.SUGGESTED_WHISPER)
+
+    def test_a_sixteen_gigabyte_machine_counts_as_a_roomy_one(self):
+        # What a machine reports is what the firmware and the graphics left
+        # of it: 16 GB answers about 15.4, and a threshold written at the
+        # number on the box is one no machine ever reaches.
+        self.assertEqual(
+            ggml.suggested_whisper(memory=int(15.4 * ggml.GB), graphics="Metal"),
+            ggml.ACCURATE_WHISPER)
+
+    def test_the_suggestion_that_fits_is_offered_first(self):
+        first = ggml.suggested_llm(memory=6 * ggml.GB)[0]
+        self.assertTrue(ggml.fits(ggml.SUGGESTED_LLM_SIZE[first],
+                                  memory=6 * ggml.GB))
+        # Nothing is dropped: what does not fit today fits once something else
+        # is closed.
+        self.assertEqual(sorted(ggml.suggested_llm(memory=6 * ggml.GB)),
+                         sorted(ggml.SUGGESTED_LLM))
+
+    def test_the_wanted_model_wins_when_there_is_room_for_it(self):
+        items = [listed("ggml-tiny.bin", 70 << 20),
+                 listed("ggml-large-v3-turbo-q5_0.bin", 574 << 20)]
+        self.assertEqual(
+            ggml.recommended(items, "ggml-large-v3-turbo-q5_0.bin",
+                             memory=16 * ggml.GB),
+            "ggml-large-v3-turbo-q5_0.bin")
+
+    def test_a_model_too_big_for_the_machine_is_not_recommended(self):
+        items = [listed("small.gguf", 1 << 30), listed("huge.gguf", 12 * ggml.GB)]
+        self.assertEqual(ggml.recommended(items, "huge.gguf",
+                                          memory=8 * ggml.GB), "small.gguf")
+
+    def test_the_full_precision_weights_are_never_the_recommendation(self):
+        # Twice the memory and twice the wait for a difference this job
+        # cannot see.
+        items = [listed("model-Q4_0.gguf", 2 * ggml.GB),
+                 listed("model-BF16.gguf", 3 * ggml.GB)]
+        self.assertEqual(ggml.recommended(items, memory=32 * ggml.GB),
+                         "model-Q4_0.gguf")
+
+    def test_nothing_is_recommended_when_nothing_fits(self):
+        self.assertEqual(
+            ggml.recommended([listed("huge.gguf", 40 * ggml.GB)],
+                             memory=8 * ggml.GB), "")
+
+
+class Grouping(Local):
+    """One group per model, rather than one long list sorted by size."""
+
+    def test_every_spelling_of_a_quantisation_reads_as_its_number(self):
+        # One list holds q5_1, Q4_K_M, MXFP4 and BF16, and the number is the
+        # whole of what any of them says to somebody choosing a row.
+        self.assertEqual(ggml.bit_depth("ggml-small-q5_1.bin"), 5)
+        self.assertEqual(ggml.bit_depth("SmolLM3-Q4_K_M.gguf"), 4)
+        self.assertEqual(ggml.bit_depth("gpt-oss-20b-MXFP4.gguf"), 4)
+        self.assertEqual(ggml.bit_depth("gemma-4-E2B-it-Q8_0.gguf"), 8)
+        # bf16 is not f16 read badly.
+        self.assertEqual(ggml.bit_depth("gemma-4-E2B-it-BF16.gguf"), 16)
+        self.assertEqual(ggml.bit_depth("mmproj-model-f16.gguf"), 16)
+        # A whisper file with no mark is the full model, and its name is the
+        # one convention here that does not carry the answer.
+        self.assertEqual(ggml.bit_depth("ggml-large-v3-turbo.bin"), 0)
+
+    def test_a_quantisation_belongs_to_the_model_it_is_a_copy_of(self):
+        self.assertEqual(ggml.whisper_family("ggml-small.en-q5_1.bin"), "small")
+        self.assertEqual(ggml.whisper_family("ggml-large-v3-q5_0.bin"),
+                         "large-v3")
+        self.assertEqual(ggml.whisper_family("ggml-large-v3-turbo.bin"),
+                         "large-v3-turbo")
+        self.assertEqual(ggml.whisper_family("ggml-medium.en.bin"), "medium")
+
+    def test_turbo_is_a_model_and_not_a_quantisation(self):
+        # The last chunk of the name is a quantisation for most of the list
+        # and part of the model's name here.
+        self.assertEqual(ggml.whisper_family("ggml-large-v3-turbo-q8_0.bin"),
+                         "large-v3-turbo")
+
+    def test_the_turbo_files_are_not_scattered_through_the_medium_ones(self):
+        # Sorted by size alone, large-v3-turbo-q5_0 lands between the two
+        # medium quantisations, half a screen from the model it is a copy of.
+        models = [listed("ggml-medium-q5_0.bin", 539 << 20),
+                  listed("ggml-large-v3-turbo-q5_0.bin", 574 << 20),
+                  listed("ggml-medium-q8_0.bin", 823 << 20),
+                  listed("ggml-large-v3-turbo.bin", 1624 << 20)]
+        groups = dict(ggml.whisper_groups(models))
+        self.assertEqual([i.name for i in groups["large-v3-turbo"]],
+                         ["ggml-large-v3-turbo-q5_0.bin",
+                          "ggml-large-v3-turbo.bin"])
+        self.assertEqual([i.name for i in groups["medium"]],
+                         ["ggml-medium-q5_0.bin", "ggml-medium-q8_0.bin"])
+
+    def test_the_smallest_model_comes_first_and_the_english_ones_last(self):
+        models = [listed("ggml-small.en-q5_1.bin", 190 << 20),
+                  listed("ggml-small-q5_1.bin", 190 << 20),
+                  listed("ggml-tiny.bin", 77 << 20)]
+        groups = ggml.whisper_groups(models)
+        self.assertEqual([family for family, _ in groups], ["tiny", "small"])
+        self.assertEqual([i.name for _, group in groups for i in group],
+                         ["ggml-tiny.bin", "ggml-small-q5_1.bin",
+                          "ggml-small.en-q5_1.bin"])

@@ -9,12 +9,14 @@ socket is faked, and everything that runs locally runs for real.
 import contextlib
 import io
 import json
+import sys
 import unittest
 import webbrowser
 from typing import ClassVar
 from unittest import mock
 
 from dikte import audio
+from dikte import cleanup
 from dikte import cli
 from dikte import config as cfg
 from dikte import ggml
@@ -423,6 +425,16 @@ class Providers(DikteTest):
         self.assertIn("groq", out)
         self.assertIn("Groq", out)
 
+    def test_opencode_is_a_choice_and_reports_under_its_own_name(self):
+        parser = cli.build_parser()
+        self.assertEqual(
+            parser.parse_args(["test-key", "opencode"]).which, "opencode")
+        self.write_config({"opencode_api_key": "opencode-test"})
+        with fake_urlopen({"data": [{"id": "deepseek-v4-flash"}]}):
+            code, out, _ = self.run_cmd(cli.cmd_test_key, which="opencode")
+        self.assertEqual(code, 0)
+        self.assertIn("opencode: connection works, 1 models visible", out)
+
 
 class Updates(DikteTest):
     """`dikte update` looks, says what it found, and installs nothing."""
@@ -502,6 +514,35 @@ class Doctor(DikteTest):
         self.assertEqual(reply["cleanup"]["model"], "some/model")
         self.assertIn("OpenRouter key, cleaning up on some/model",
                       self.run_doctor(as_json=False, cleanup_model="some/model"))
+
+    def test_cleanup_on_opencode_is_a_question_about_its_own_key(self):
+        reply = self.run_doctor(cleanup_provider="opencode",
+                                cleanup_opencode_model="glm-5.3")
+        self.assertEqual(reply["cleanup"]["provider"], "opencode")
+        self.assertEqual(reply["cleanup"]["model"], "glm-5.3")
+        self.assertIn("OpenCode Go key, cleaning up on glm-5.3",
+                      self.run_doctor(as_json=False, cleanup_provider="opencode",
+                                      cleanup_opencode_model="glm-5.3"))
+
+    def test_it_survives_every_provider_cleanup_can_be_set_to(self):
+        """It used to raise KeyError on the local model, whose executable is ""."""
+        for name in cleanup.PROVIDERS:
+            with self.subTest(provider=name):
+                reply = self.run_doctor(cleanup_provider=name)
+                self.assertEqual(reply["cleanup"]["provider"], name)
+                self.run_doctor(as_json=False, cleanup_provider=name)
+
+    def test_a_provider_with_no_key_to_check_says_so_rather_than_no(self):
+        """A CLI needs none, so `false` there would read as one gone missing."""
+        self.assertIsNone(self.run_doctor(cleanup_provider="claude")["cleanup"]["key"])
+        self.assertIsNone(self.run_doctor(cleanup_provider="local")["cleanup"]["key"])
+        self.assertIs(self.run_doctor(cleanup_provider="gemini")["cleanup"]["key"],
+                      False)
+
+    def test_cleanup_on_google_is_a_question_about_its_own_key(self):
+        line = self.run_doctor(as_json=False, cleanup_provider="gemini",
+                               cleanup_gemini_model="gemini-2.5-flash")
+        self.assertIn("Google AI Studio key, cleaning up on gemini-2.5-flash", line)
 
     def test_it_asks_after_the_programs_this_desktop_actually_uses(self):
         """A missing ydotool on a Mac is a red mark with nothing behind it."""
@@ -628,7 +669,11 @@ class WithoutAnInstance(DikteTest):
     def run_verb(self, argv):
         # launch_gui replaces this process with the application, so it never
         # comes back in real use and must not be allowed to here.
+        # `ask` with no text reads what was piped in, and the runner's own
+        # stdin is not that: under pytest it is an object that refuses to be
+        # read at all.
         with mock.patch.object(ipc, "send", return_value=None), \
+                mock.patch.object(sys, "stdin", io.StringIO()), \
                 mock.patch.object(cli, "launch_gui") as launch, \
                 captured() as (out, err):
             code = cli.run(argv)

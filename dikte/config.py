@@ -387,10 +387,19 @@ DEFAULTS = {
     "groq_base_url": "https://api.groq.com/openai/v1",
     "openrouter_api_key": "",
     "openrouter_base_url": "https://openrouter.ai/api/v1",
+    "gemini_api_key": "",
+    # Google's OpenAI-compatible endpoint. Cleanup only: there is no
+    # /audio/transcriptions behind it, so it is not one of the TRANSCRIBERS.
+    "gemini_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "opencode_api_key": "",
+    "opencode_base_url": "https://opencode.ai/zen/go/v1",
     "transcribe_provider": "local",  # "local", or a key of TRANSCRIBERS
     "transcribe_model": "gpt-4o-transcribe",           # used when provider is openai
     "groq_transcribe_model": "whisper-large-v3-turbo",
     "openrouter_transcribe_model": "openai/gpt-4o-transcribe",
+    # What a timestamped run (subtitles) asks OpenRouter for: not every model
+    # there returns segment times. Empty -> openai/whisper-1.
+    "openrouter_file_model": "",
     "language": "tr",
     "transcribe_prompt": "",
 
@@ -412,6 +421,9 @@ DEFAULTS = {
     "cleanup_model": "google/gemini-3.5-flash-lite",
     "cleanup_claude_model": "haiku",   # Claude Code: an alias, or a full model id
     "cleanup_codex_model": "",         # empty -> whatever Codex is set to
+    "cleanup_gemini_model": "gemini-3.5-flash-lite",
+    "cleanup_agy_model": "",           # empty -> whatever Antigravity is set to
+    "cleanup_opencode_model": "deepseek-v4-flash",
     "cleanup_reasoning": "",        # empty -> whatever the model does by default
 
     # --- llama.cpp, on this machine -----------------------------------------
@@ -430,6 +442,15 @@ DEFAULTS = {
     # Off rather than empty: a model trained to think will, and 300 tokens of
     # reasoning about a comma is 300 tokens of waiting.
     "local_llm_reasoning": "none",
+
+    # --- what happens to both of them when nothing is using them -------------
+    # One pair for the two servers rather than a pair each: what is being
+    # decided is whether a machine keeps gigabytes tied up between dictations,
+    # and nobody wants that answered one model at a time. On by default because
+    # a reload costs seconds and the memory costs the rest of the desktop.
+    "local_idle_unload": True,
+    "local_idle_minutes": 10,
+
     "cleanup_prompt": "",           # empty -> language-specific default
     "auto_paste": True,
     "paste_shortcut": paste.desktop().shortcuts[0],   # cmd+v on a Mac
@@ -458,6 +479,9 @@ DEFAULTS = {
     "evdev_hotkey": False,
     "overlay_corner": "bottom-left",
     "overlay_screen": "",
+    # Off, so that an indicator stays where it appeared unless it is asked to
+    # keep up with the pointer. Nothing to say when a screen is named above.
+    "overlay_follows_pointer": False,
     "keep_audio": False,
     "history_limit": 200,
     # A look at the releases page once a day, and nothing more than a look:
@@ -485,12 +509,14 @@ DEFAULTS = {
 
     # --- speaking a command to an agent -------------------------------------
     "assistant_shortcut": "",       # empty -> tray only
-    "assistant_provider": "claude",  # claude | codex | openrouter
+    "assistant_provider": "claude",  # claude | codex | agy | openrouter
     "assistant_model": "sonnet",    # Claude Code: an alias, or a full model id
     "assistant_permission_mode": "auto",
     "assistant_codex_model": "",    # empty -> whatever Codex is set to
     "assistant_codex_sandbox": "workspace-write",
     "assistant_openrouter_model": "google/gemini-3.5-flash",
+    "assistant_agy_model": "",      # empty -> whatever Antigravity is set to
+    "assistant_opencode_model": "deepseek-v4-flash",
     "assistant_reasoning": "",      # empty -> the model's own default
     "assistant_dir": "",            # empty -> the home directory
     "assistant_prompt": "",         # empty -> language-specific default
@@ -633,6 +659,12 @@ class Config:
     def openrouter_key(self):
         return self.api_key("openrouter_api_key")
 
+    def gemini_key(self):
+        return self.api_key("gemini_api_key")
+
+    def opencode_key(self):
+        return self.api_key("opencode_api_key")
+
     def transcribe_target(self):
         """Key, endpoint and model for whichever provider does speech to text.
 
@@ -652,8 +684,9 @@ class Config:
             # to land on rather than reading it from there.
             name = "openai"
         who = TRANSCRIBERS[name]
+        file_model = self["openrouter_file_model"] if name == "openrouter" else ""
         return api.Target(name, who.service, self.api_key(who.key),
-                          self[who.url], self[who.model])
+                          self[who.url], self[who.model], file_model.strip())
 
     def transcribe_ready(self):
         """Whether speech to text could run right now, without opening Settings."""
@@ -686,6 +719,14 @@ class Config:
             binary=self["local_llm_binary"],
             context=int(self["local_llm_context"]),
         )
+        ggml.whisper.set_idle(self.idle_seconds())
+        ggml.llm.set_idle(self.idle_seconds())
+
+    def idle_seconds(self):
+        """How long a loaded model may sit unused. 0 means it is kept."""
+        if not self["local_idle_unload"]:
+            return 0
+        return max(1, int(self["local_idle_minutes"])) * 60
 
     def uses_local_llm(self):
         """Whether anything is set to run the local cleanup model."""

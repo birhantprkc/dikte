@@ -26,6 +26,8 @@ interface already knows how to show.
 
 import atexit
 import collections
+import contextlib
+import ctypes
 import ctypes.util
 import hashlib
 import http.client
@@ -67,6 +69,10 @@ STARTUP_TIMEOUT = 180.0
 # to load takes longer than this to be read in first. The line between "worth
 # another port" and "would fail the same way again" is drawn on time.
 EARLY_EXIT_WINDOW = 5.0
+# How often the watcher looks at a model it has been asked to unload when idle.
+# Short next to any window worth setting, so the memory goes back within seconds
+# of the window closing rather than a minute after it.
+IDLE_CHECK_SECONDS = 5.0
 DOWNLOAD_CHUNK = 1 << 20
 
 # `health` is the path that answers only once the model is in memory. whisper
@@ -76,6 +82,13 @@ Program = collections.namedtuple("Program", "name repo binary health")
 
 WHISPER = Program("whisper", "ggml-org/whisper.cpp", "whisper-server", "")
 LLAMA = Program("llama", "ggml-org/llama.cpp", "llama-server", "/health")
+DIKTE_REPO = "yusufipk/dikte"
+MANAGED_WHISPER_RELEASE = "whisper.cpp-v1.9.3"
+MANAGED_WHISPER_VERSION = "v1.9.3"
+MANAGED_WHISPER_VULKAN = "whisper-bin-ubuntu-vulkan-x64.tar.gz"
+MANAGED_WHISPER_SHA256 = (
+    "c25ca76504144da488eb74441390a7b9aa7ce547e5f2f391cbd831253c9b54d8"
+)
 
 # Where the models are listed. Neither list is written into Dikte: a catalogue
 # in the source means a release of Dikte for every model somebody else
@@ -83,32 +96,139 @@ LLAMA = Program("llama", "ggml-org/llama.cpp", "llama-server", "/health")
 WHISPER_MODELS_REPO = "ggerganov/whisper.cpp"
 LLM_AUTHOR = "ggml-org"
 
+# The file llama.cpp attaches to its version releases in place of the binaries:
+# a line naming the nightly tag those are published under.
+NIGHTLY_TAG = "nightly-tag.txt"
+
 # What the whisper repository holds besides models: Core ML encoders for Apple
 # hardware and the odd loose file.
 WHISPER_PREFIX = "ggml-"
 WHISPER_SUFFIX = ".bin"
+# The mark on the whisper models trained on English alone. They are half of the
+# list, and they belong under the model they are a variant of rather than
+# scattered through it by size.
+ENGLISH_ONLY = ".en"
+
+# Full-precision weights, however they are spelled. Several times the memory of
+# a quantisation of the same model, for a difference dictation and cleanup
+# cannot see, so nothing here ever points at one.
+SIXTEEN_BIT = ("bf16", "f16", "fp16")
+
+# How many bits a weight is stored in, read off the file name. Every one of
+# these lists spells it differently, `q5_1` and `Q4_K_M` and `MXFP4` and
+# `BF16`, and the only part of that anybody choosing between two rows needs is
+# the number. Longest mark first, so `bf16` is not read as `f16`.
+BIT_DEPTHS = (("mxfp4", 4), ("bf16", 16), ("fp16", 16), ("f16", 16),
+              ("q2", 2), ("q3", 3), ("q4", 4), ("q5", 5), ("q6", 6), ("q8", 8))
 
 # What a GGUF repository holds besides the model: mmproj is the vision half of a
-# multimodal model, mtp a draft head for speculative decoding. Neither is a model
-# a server can be started on, and offering them is offering a failure.
-GGUF_SKIP = ("mmproj", "mtp-")
+# multimodal model, and mtp, dflash, dspark and eagle3 are draft heads for
+# speculative decoding. None of them is a model a server can be started on, and
+# they are the small files in the repository, so a list sorted by size puts them
+# at the top where they are likeliest to be clicked.
+GGUF_SKIP = ("mmproj", "mtp-", "dflash-", "dspark-", "eagle3-", "draft-")
 # Big enough for a 12B at Q4 and far past anything cleanup wants; the point is
 # to keep a 400 GB frontier model out of a list somebody might click.
 GGUF_MAX_BYTES = 16 << 30
 
+# Repositories that carry GGUF files but nothing a cleanup server can be started
+# on: a vision or audio tower with no text half worth running, a speech model,
+# and the base models, which continue text rather than following an instruction
+# and answer a cleanup prompt by carrying on writing the transcript.
+# Matched as plain substrings, so every one of these carries its own
+# delimiters: an unanchored "test-" is also inside "Latest-" and would drop a
+# publisher that is perfectly usable.
+LLM_REPO_SKIP = ("-Base-GGUF", "-VL-", "-Vision-", "-Omni-", "-Video-",
+                 "-TTS-", "parakeet", "/test-")
+
+GB = 1 << 30
+
 # Suggestions, not a catalogue: the list itself is fetched, and these are only
-# the rows that float to the top of it. Small instruction-following models,
-# because cleanup is punctuation and filler words rather than anything that
-# wants thinking about.
+# the rows that float to the top of it. Cleanup is punctuation, capitals and
+# filler words rather than anything that wants thinking about, so what it is
+# picked on is instruction following at a size a desktop can spare. Gemma 4
+# scores 94.6 on IFEval at E2B and 96.7 at E4B, and E2B leads here rather than
+# E4B because two points of instruction following is not worth twice the
+# weights on a job that runs while somebody waits for their sentence to appear.
+# SmolLM3 and Gemma 3 are the older pair below them. Qwen3.5 0.8B is for the
+# machines nothing else fits on; it thinks before it answers, which is what the
+# Thinking box in the settings window turns off.
 SUGGESTED_LLM = (
-    "ggml-org/gemma-3-4b-it-GGUF",
     "ggml-org/gemma-4-E2B-it-GGUF",
     "ggml-org/gemma-4-E4B-it-GGUF",
+    "ggml-org/gemma-3-4b-it-GGUF",
     "ggml-org/SmolLM3-3B-GGUF",
+    "ggml-org/Qwen3.5-0.8B-GGUF",
 )
+# Roughly what each of those weighs at the quantisation cleanup would run, to
+# the nearest half gigabyte. Not a catalogue of files: the sizes on the rows
+# come from the publisher, and this only decides which suggestion is offered
+# first on a machine that has room for some of them and not others.
+SUGGESTED_LLM_SIZE = {
+    "ggml-org/gemma-4-E2B-it-GGUF": 3 * GB,
+    "ggml-org/gemma-4-E4B-it-GGUF": 5 * GB,
+    "ggml-org/gemma-3-4b-it-GGUF": 5 * GB // 2,
+    "ggml-org/SmolLM3-3B-GGUF": 2 * GB,
+    "ggml-org/Qwen3.5-0.8B-GGUF": GB // 2,
+}
+
+# What each of them is, in the words somebody choosing between them would
+# use. A repository id says the publisher, the parameter count, the shape of
+# the weights and nothing at all about whether it is the one to click, and
+# `ggml-org/gemma-4-E2B-it-GGUF` reads as four pieces of jargon to everybody
+# who has not been reading model cards all year.
+SUGGESTED_LLM_NOTE = {
+    "ggml-org/gemma-4-E2B-it-GGUF":
+        "Google Gemma 4, the small one. The default: nothing else this size "
+        "follows an instruction as closely, and cleanup is all instruction.",
+    "ggml-org/gemma-4-E4B-it-GGUF":
+        "The same model one size up. A little more accurate, about twice the "
+        "weights and twice the wait.",
+    "ggml-org/gemma-3-4b-it-GGUF":
+        "The previous Gemma. Still good, and the smallest of the Gemmas here.",
+    "ggml-org/SmolLM3-3B-GGUF":
+        "Hugging Face's own small model, for a machine the Gemmas crowd.",
+    "ggml-org/Qwen3.5-0.8B-GGUF":
+        "The smallest of them, for a machine nothing else fits on. It thinks "
+        "before it answers unless Thinking below is off.",
+}
+
 # Turbo at q5_0 is smaller than `small` and better than it, which makes the
-# usual "start small" advice point at the same file as "start good".
+# usual "start small" advice point at the same file as "start good". It is
+# large-v3 with the decoder cut from 32 layers to 4: several times faster, at
+# one to two points of word error in English and about two and a half in the
+# other languages.
 SUGGESTED_WHISPER = "ggml-large-v3-turbo-q5_0.bin"
+# Those two and a half points back, for twice the file and several times the
+# work per second. Only suggested where there is a card to do the work and
+# memory to hold it, because that is where the trade stops costing anything a
+# person waiting for a dictation would notice.
+ACCURATE_WHISPER = "ggml-large-v3-q5_0.bin"
+# What to point at instead on a machine the turbo model would crowd. Same
+# quantisation ladder, one rung down in size and in accuracy.
+SMALL_MACHINE_WHISPER = "ggml-small-q5_1.bin"
+# Under this much system memory, a 600 MB model plus the rest of a desktop is
+# already tight, so the suggestion drops to the smaller one. Over the other,
+# the accurate model is the one to point at.
+SMALL_MACHINE = 4 * GB
+# Fifteen and not sixteen: what the machine reports is what is left after the
+# firmware and the graphics have taken their reservations out of it, and a
+# 16 GB machine answers about 15.4. A threshold written at the number on the
+# box is one no machine sold as that size ever reaches.
+ROOMY_MACHINE = 15 * GB
+# What a model may take of this machine's memory before it is called too big:
+# half of it, less a gigabyte for the context and the runtime around the
+# weights. A rule of thumb rather than a measurement, and deliberately a
+# cautious one, because the failure it is guarding against is a machine that
+# swaps itself to a standstill rather than a model that refuses to load.
+MEMORY_SHARE = 0.5
+MEMORY_OVERHEAD = GB
+# What is left to offer on a machine too small for the sum above to leave
+# anything. Enough for the smallest whisper models and for a sub-billion
+# cleanup model, which is what such a machine can run.
+MEMORY_FLOOR = GB // 2
+# What total_memory() read the one time it asked. None until it has.
+_MEMORY = None
 
 
 class LocalError(Exception):
@@ -277,6 +397,102 @@ def _wanted_assets(program):
     return (f"bin-ubuntu-{arch}.tar.gz",)
 
 
+def _managed_whisper(program, tag=""):
+    """Whether this machine is one Dikte publishes its own whisper-server for.
+
+    Linux x86_64 with a Vulkan loader on it, and no version asked for by hand:
+    a pinned version is upstream's to answer.
+    """
+    return (not tag and program is WHISPER and sys.platform == "linux"
+            and platform.machine().lower() in ("x86_64", "amd64")
+            and _has_vulkan())
+
+
+def _managed_asset(refresh=False):
+    """The Vulkan whisper-server Dikte builds itself, or None.
+
+    Taken only when the archive's digest is the reviewed one. Anything else,
+    a release that is not there yet, a GitHub that cannot be reached, a file
+    that is not the reviewed bytes, leaves upstream's processor build as the
+    answer, and the install record says which of the two landed.
+    """
+    try:
+        _, assets = hub.release(DIKTE_REPO, MANAGED_WHISPER_RELEASE,
+                                refresh=refresh)
+    except hub.HubError:
+        return None
+    return next((a for a in assets
+                 if a.name.endswith(MANAGED_WHISPER_VULKAN)
+                 and a.sha256 == MANAGED_WHISPER_SHA256), None)
+
+
+def _matching_asset(program, assets):
+    """The archive this machine wants out of one release's files, or None."""
+    for ending in _wanted_assets(program):
+        item = next((a for a in assets if a.name.endswith(ending)), None)
+        if item:
+            return item
+    return None
+
+
+def _pick_asset(program, tag="", refresh=False):
+    """(tag, Item) for the release archive to install. Item is None when there
+    is none for this machine.
+
+    Dikte's own Vulkan whisper-server comes before upstream's where this
+    machine is one it is built for, because whisper.cpp publishes no Vulkan
+    archive for Linux at all.
+
+    A named tag is taken as given. For the newest, what GitHub answers is not
+    always where the builds are: llama.cpp's latest release is a version marker
+    carrying a single nightly-tag.txt, which names the tag the archives are
+    actually attached to, and those are prereleases that "latest" never points
+    at. The pointer is followed when it is there, and when it is not, the newest
+    release that does carry a build for this machine is taken instead.
+    """
+    if _managed_whisper(program, tag):
+        item = _managed_asset(refresh=refresh)
+        if item:
+            return MANAGED_WHISPER_VERSION, item
+    named = bool(tag) and tag != "latest"
+    missing = None
+    try:
+        tag, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
+    except hub.HubError as exc:
+        # A release carrying no files at all is the case the search below exists
+        # for, not a reason to stop before it: the build for this machine may be
+        # attached to a prerelease that "latest" never points at. The failure is
+        # kept rather than dropped, because an unreachable GitHub arrives here
+        # the same way and that one is the message the caller wants.
+        if named:
+            raise
+        missing, assets = exc, []
+    item = _matching_asset(program, assets)
+    if item or named:
+        return tag, item
+    # Best effort from here on: a machine this project publishes nothing for is
+    # not a failed lookup, and the caller's message about that is the useful
+    # one. Whatever goes wrong while looking further leaves it standing.
+    try:
+        pointer = next((a for a in assets if a.name == NIGHTLY_TAG), None)
+        if pointer:
+            nightly = hub.text(pointer.url).strip()
+            if nightly:
+                found, assets = hub.release(program.repo, nightly, refresh=refresh)
+                item = _matching_asset(program, assets)
+                if item:
+                    return found, item
+        for found, assets in hub.releases(program.repo, refresh=refresh):
+            item = _matching_asset(program, assets)
+            if item:
+                return found, item
+    except hub.HubError:
+        pass
+    if missing is not None:
+        raise missing
+    return tag, None
+
+
 def _install_record(program):
     return BIN_DIR / program.name / "installed.json"
 
@@ -298,6 +514,21 @@ def installed_program(program):
 
 def installed_version(program):
     return _read_record(program).get("tag") or ""
+
+
+def vulkan_missing(program):
+    """Whether what Dikte installed is the processor build on a machine the
+    Vulkan one was fetched for.
+
+    The Vulkan whisper-server is a release of Dikte's own, published by hand
+    once the reviewed archive is built, and the install falls back to the
+    upstream processor build whenever that release, the file in it, or its
+    reviewed digest is not there. Nothing is wrong with the fallback except
+    that it is invisible: a graphics card sitting idle looks exactly like a
+    graphics card being used.
+    """
+    return (bool(installed_program(program))
+            and _read_record(program).get("backend") == "processor")
 
 
 def program_path(program, custom=""):
@@ -372,18 +603,15 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
 
     `tag` is empty for whatever the project released last, which is the point:
     a version pinned in Dikte's source would mean a release of Dikte every time
-    whisper.cpp has one.
+    whisper.cpp has one. The Linux Vulkan whisper-server is the exception, and
+    _pick_asset says why.
     """
+    managed = _managed_whisper(program, tag)
     try:
-        tag, assets = hub.release(program.repo, tag or "latest", refresh=refresh)
+        tag, item = _pick_asset(program, tag, refresh=refresh)
     except hub.HubError as exc:
         raise LocalError(str(exc)) from exc
 
-    item = None
-    for ending in _wanted_assets(program):
-        item = next((a for a in assets if a.name.endswith(ending)), None)
-        if item:
-            break
     if item is None:
         # Nothing to download and nothing to install for you: whisper.cpp
         # publishes no macOS binary, and Homebrew's whisper-cpp is configured
@@ -447,8 +675,15 @@ def install_program(program, tag="", on_progress=None, should_stop=None,
         # Found under the sibling, run from the final directory.
         binary = into / binary.relative_to(fresh)
         # Written last, so the record never points at anything half-made.
-        _install_record(program).write_text(
-            json.dumps({"tag": tag, "binary": str(binary)}), encoding="utf-8")
+        record = {"tag": tag, "binary": str(binary)}
+        if managed:
+            # Which of the two builds this machine ended up with. Only written
+            # where both were on offer, so an install that never had the
+            # choice is not made to look like a fallback.
+            record["backend"] = (
+                "vulkan" if item.name.endswith(MANAGED_WHISPER_VULKAN)
+                else "processor")
+        _install_record(program).write_text(json.dumps(record), encoding="utf-8")
     except OSError as exc:
         raise LocalError(t("Could not install {name}: {error}",
                            name=program.name, error=exc)) from exc
@@ -479,7 +714,210 @@ def _drop_old_versions(program, keep):
         pass
 
 
+# --- what this machine can run --------------------------------------------
+
+
+def total_memory():
+    """Bytes of memory on this machine, or 0 when it cannot be read.
+
+    Zero is a real answer and not a failure: every caller treats an unknown
+    machine as one big enough for whatever it is looking at, because a wrong
+    "too big" is worse advice than none.
+
+    Read once and kept. The memory in a machine does not change while Dikte
+    runs, and a list of thirty rows asks this question seventy times: on the
+    Mac path below, where the answer comes from a program rather than a
+    library call, that was seventy processes started on the interface thread
+    every time a list was drawn.
+    """
+    global _MEMORY
+    if _MEMORY is None:
+        _MEMORY = max(_read_memory(), 0)
+    return _MEMORY
+
+
+def _read_memory():
+    """What the system says, which on a bad day is a negative number.
+
+    sysconf answers -1 for a limit it holds to be indeterminate, and CPython
+    hands that straight back rather than raising, so the product below can
+    come out negative. The caller floors it at zero, which is the answer for
+    a machine nothing could be read from: a 64 GB workstation whose sysconf
+    shrugged was otherwise being told every model past 512 MB was too big
+    for it.
+    """
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        pass
+    if sys.platform == "darwin":
+        # Not every build of Python on a Mac has SC_PHYS_PAGES in its sysconf
+        # table, and this is the number the system itself is asked for.
+        try:
+            out = subprocess.run(["sysctl", "-n", "hw.memsize"], check=True,
+                                 capture_output=True, text=True, timeout=5)
+            return int(out.stdout.strip())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 0
+    if sys.platform != "win32":
+        return 0
+
+    class Status(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+    try:
+        status = Status()
+        status.dwLength = ctypes.sizeof(Status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullTotalPhys)
+    except (AttributeError, OSError, ValueError):
+        pass
+    return 0
+
+
+def accelerator():
+    """The graphics interface this machine offers, or "".
+
+    The machine's half of the answer only. Whether a card is actually reached
+    also depends on which build landed, and the program line above says that:
+    a processor build ignores the card whatever is installed here. What this
+    is for is the other half, which nothing else on the window says at all.
+    """
+    if sys.platform == "darwin":
+        return "Metal"
+    return "Vulkan" if _has_vulkan() else ""
+
+
+def memory_budget(memory=None):
+    """What a model may weigh on this machine, or 0 when that is unknown.
+
+    Floored rather than allowed to reach zero: on a 2 GB machine the share
+    less the overhead is nothing at all, and a budget of nothing is the same
+    number this returns for a machine it could not read, which would turn the
+    tightest machine there is into the one where everything is offered.
+    """
+    memory = total_memory() if memory is None else memory
+    if not memory:
+        return 0
+    return max(int(memory * MEMORY_SHARE) - MEMORY_OVERHEAD, MEMORY_FLOOR)
+
+
+def fits(size, memory=None):
+    """Whether a model of this size is worth offering on this machine."""
+    budget = memory_budget(memory)
+    return not budget or size <= budget
+
+
+def suggested_whisper(memory=None, graphics=None):
+    """The whisper model to point at here, by name.
+
+    Three machines. One with no room, which gets the model that leaves some.
+    One with a card and memory to spare, which gets the accurate model, because
+    the several times the work it is per second is several times a fraction of
+    a second there. Everything in between gets turbo, which is the answer
+    almost every time somebody asks.
+
+    A Vulkan or Metal loader is not proof of a fast card, so the accurate model
+    waits on the memory as well: a machine with 16 GB in it and a driver
+    installed is one that will not notice either way.
+    """
+    memory = total_memory() if memory is None else memory
+    graphics = accelerator() if graphics is None else graphics
+    if memory and memory < SMALL_MACHINE:
+        return SMALL_MACHINE_WHISPER
+    if graphics and memory >= ROOMY_MACHINE:
+        return ACCURATE_WHISPER
+    return SUGGESTED_WHISPER
+
+
+def suggested_llm(memory=None):
+    """The suggested cleanup repositories, the ones that fit here first.
+
+    The order they are written in is the order they are worth having. What
+    this changes is only which of them a machine that cannot hold the best one
+    is shown first, and nothing is dropped: a model that does not fit today
+    fits once something else is closed.
+    """
+    return sorted(SUGGESTED_LLM,
+                  key=lambda repo: not fits(SUGGESTED_LLM_SIZE.get(repo, 0),
+                                            memory))
+
+
+def recommended(items, want="", memory=None):
+    """The one row out of `items` worth pointing at here, or "".
+
+    `want` is taken when it is on offer and fits. Without it, which is the
+    cleanup list, the smallest file that does is taken: q4 is where these
+    lists start, and every rung above it is roughly twice the memory and twice
+    the wait for a difference neither dictation nor cleanup can see. The
+    16-bit weights are left out for the same reason, twice over.
+    """
+    fitting = [i for i in items if fits(i.size, memory)]
+    if want and any(i.name == want for i in fitting):
+        return want
+    usable = [i for i in fitting
+              if not any(mark in i.name.lower() for mark in SIXTEEN_BIT)]
+    return min(usable, key=lambda i: i.size).name if usable else ""
+
+
 # --- the models -----------------------------------------------------------
+
+
+def bit_depth(name):
+    """The bits per weight the file name says, or 0 when it says nothing."""
+    lowered = name.lower()
+    for mark, bits in BIT_DEPTHS:
+        if mark in lowered:
+            return bits
+    return 0
+
+
+def whisper_family(name):
+    """The model a whisper file belongs to: ggml-small.en-q5_1.bin is `small`.
+
+    The list arrives sorted by size and nothing else, which interleaves the
+    families: `large-v3-turbo-q5_0` lands between the two `medium`
+    quantisations, half a screen from the turbo model it is a copy of. Grouping
+    is what puts the choice between models above the choice of quantisation,
+    which is the order somebody actually makes them in.
+    """
+    stem = name
+    if stem.startswith(WHISPER_PREFIX):
+        stem = stem[len(WHISPER_PREFIX):]
+    if stem.endswith(WHISPER_SUFFIX):
+        stem = stem[:-len(WHISPER_SUFFIX)]
+    head, _, last = stem.rpartition("-")
+    # q5_0, q5_1, q8_0. `turbo` is the other thing a last chunk can be, and it
+    # is part of the model's name rather than a quantisation of it.
+    if head and last.startswith("q") and last[1:].replace("_", "").isdigit():
+        stem = head
+    return stem[:-len(ENGLISH_ONLY)] if stem.endswith(ENGLISH_ONLY) else stem
+
+
+def whisper_groups(items):
+    """[(family, [Item])] for a whisper list: one group per model.
+
+    Groups by how big the model gets rather than by a ladder written down
+    here, so a family published next year sorts itself. Inside one, the
+    multilingual files come before the English-only ones and the small
+    quantisations before the large.
+    """
+    groups = {}
+    for item in items:
+        groups.setdefault(whisper_family(item.name), []).append(item)
+    ordered = sorted(groups.items(),
+                     key=lambda pair: (max(i.size for i in pair[1]), pair[0]))
+    return [(family, sorted(files,
+                            key=lambda i: (ENGLISH_ONLY in i.name, i.size)))
+            for family, files in ordered]
 
 
 def whisper_models(refresh=False):
@@ -494,10 +932,23 @@ def whisper_models(refresh=False):
     return sorted(models, key=lambda f: f.size)
 
 
+def can_clean(repo):
+    """Whether a repository could hold a model cleanup can be started on.
+
+    By name, because the alternative is a file listing per repository and the
+    list is forty of them. It catches the kinds that are never a cleanup model
+    rather than the ones that are too big, which the file sizes answer exactly
+    once a publisher is chosen.
+    """
+    lowered = repo.lower()
+    return not any(mark.lower() in lowered for mark in LLM_REPO_SKIP)
+
+
 def llm_repos(refresh=False):
     """Repository ids for the GGUF models on offer, suggestions first."""
     try:
-        found = [r.id for r in hub.repos(author=LLM_AUTHOR, refresh=refresh)]
+        found = [r.id for r in hub.repos(author=LLM_AUTHOR, refresh=refresh)
+                 if can_clean(r.id)]
     except hub.HubError:
         # A menu rather than a catalogue: with nothing to show, the suggestions
         # are still worth showing, and whatever is wrong with the network will
@@ -505,6 +956,14 @@ def llm_repos(refresh=False):
         found = []
     if not found:
         return list(SUGGESTED_LLM)
+    # Gemma publishes its base models under the instruction-tuned one's name
+    # with the `-it` taken out, so the two sit next to each other in the list
+    # and the wrong one answers a cleanup prompt by carrying on writing the
+    # transcript. Dropped only where the tuned sibling is here to drop it for.
+    tuned = set(found)
+    found = [r for r in found
+             if not r.endswith("-GGUF")
+             or r[:-len("-GGUF")] + "-it-GGUF" not in tuned]
     first = [r for r in SUGGESTED_LLM if r in found]
     return first + [r for r in found if r not in first]
 
@@ -662,6 +1121,15 @@ class Server:
         # The pid this instance last wrote to its pid file, so _forget never
         # removes a file some other Dikte wrote after us.
         self._pid = 0
+        # The idle unload. `_idle` is the window in seconds, zero meaning the
+        # model stays loaded until something else stops it; `_used` is when the
+        # address was last handed out or a request last finished; `_busy` counts
+        # the requests still in flight. The count is there because a file being
+        # transcribed is one address lookup and then minutes of work, which to a
+        # clock started at the lookup looks exactly like a model nobody wants.
+        self._idle = 0.0
+        self._used = 0.0
+        self._busy = 0
 
     # ---- settings --------------------------------------------------------
 
@@ -678,6 +1146,23 @@ class Server:
     def settings(self):
         with self._lock:
             return dict(self._settings)
+
+    def set_idle(self, seconds):
+        """How long a loaded model may sit unused before the memory goes back.
+
+        Deliberately not one of the settings above: those describe the server
+        that is running, and changing one has to restart it. This describes how
+        long to keep it, which the server it is applied to never needs to know.
+        Zero keeps the model until something else stops it.
+        """
+        with self._lock:
+            self._idle = max(0.0, float(seconds))
+
+    @property
+    def idle(self):
+        """The window `set_idle` was last given, in seconds."""
+        with self._lock:
+            return self._idle
 
     def _settings_key(self):
         """What a running server would have to be restarted for."""
@@ -718,13 +1203,83 @@ class Server:
             proc, port, log = self._launch(settings)
             with self._lock:
                 self._proc, self._port, self._log, self._key = proc, port, log, key
+                # Only the clock. The count is not this launch's to reset: a
+                # caller that took a hold and then asked for the address, which
+                # is what the local cleanup does, would have it wiped here and
+                # spend the whole request unprotected.
+                self._used = time.monotonic()
+            threading.Thread(target=self._watch, args=(proc,), daemon=True).start()
             return self.base_url()
 
     def _current_url(self):
+        """The address of a server running the current settings, or "".
+
+        Asking counts as using it. Everything that asks is about to send a
+        request, and the idle watcher reads the same clock, so the stamp has to
+        be set here rather than where the answer comes back.
+        """
         with self._lock:
             up = self._proc is not None and self._proc.poll() is None
-            return (f"http://{HOST}:{self._port}/v1"
-                    if up and self._key == self._settings_key() else "")
+            if not (up and self._key == self._settings_key()):
+                return ""
+            self._used = time.monotonic()
+            return f"http://{HOST}:{self._port}/v1"
+
+    @contextlib.contextmanager
+    def busy(self):
+        """Hold the model for the length of one request.
+
+        A dictation is over a second after the address was handed out, but a
+        file is minutes of it, and an hour of meeting is longer still. Without
+        the count the watcher would unload the model out from under the request
+        that started it.
+        """
+        with self._lock:
+            self._busy += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                # Nothing else moves the count, so every hold that was taken is
+                # given back here and it stays balanced across a restart. A hold
+                # outliving the server it was taken against only keeps the next
+                # one loaded a moment longer, which is the safe way round.
+                self._busy -= 1
+                self._used = time.monotonic()
+
+    def _idle_now(self, proc):
+        """Whether `proc` is still ours and has been sitting unused long enough."""
+        with self._lock:
+            if self._proc is not proc or not self._idle or self._busy:
+                return False
+            return time.monotonic() - self._used >= self._idle
+
+    def _watch(self, proc):
+        """Give the memory back when nothing has asked anything for a while.
+
+        One thread per launch, holding the process it was started for, so that a
+        server stopped and started again is watched by the new thread alone and
+        this one leaves on the first pass that finds its own process gone.
+
+        Started whatever the window is, zero included: turning the unload on in
+        Settings has to reach a model that is already loaded, and a thread that
+        wakes every few seconds to read one number is cheaper than the machinery
+        for starting one later.
+        """
+        while True:
+            time.sleep(IDLE_CHECK_SECONDS)
+            with self._lock:
+                if self._proc is not proc:
+                    return           # stopped, or replaced by a later launch
+            if not self._idle_now(proc):
+                continue
+            with self._starting:
+                # Asked once more under the lock a start has to take. An address
+                # handed out while this thread waited its turn stamps _used, and
+                # the request behind it must not arrive at a server killed here.
+                if self._idle_now(proc):
+                    self._stop_now()
+                    return
 
     def _launch(self, settings):
         args = self._build(settings)        # raises LocalError when unusable
@@ -830,6 +1385,31 @@ class Server:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
+
+    def unload(self):
+        """Stop the server unless it is in the middle of something.
+
+        The same rule the idle watcher goes by, taken by hand from the menu, and
+        it says no for the same reason: the memory is worth having back, but not
+        at the price of the dictation waiting on it. A model still being read in
+        counts as in the middle of something too, and that is why the lock is
+        asked for rather than waited on: this runs on the interface's own
+        thread, and a start holds _starting for as long as the load takes, which
+        for a large model on a cold cache is most of a minute. True when nothing
+        is loaded any more, either way.
+        """
+        if not self._starting.acquire(blocking=False):
+            return False
+        try:
+            with self._lock:
+                if self._proc is None:
+                    return True
+                if self._busy:
+                    return False
+            self._stop_now()
+            return True
+        finally:
+            self._starting.release()
 
     def stop(self):
         # Taking _starting means a stop cannot slide past a launch in flight:
