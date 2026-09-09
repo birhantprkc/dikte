@@ -1,8 +1,13 @@
 name: UI screenshots
+run-name: "UI screenshots (${{ inputs.pr && format('PR #{0}', inputs.pr) || github.ref_name }})"
 
 on:
-  pull_request:
   workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to capture (leave empty for the selected branch)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -26,6 +31,9 @@ jobs:
       QT_SCALE_FACTOR: "2"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || github.ref }}
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -55,4 +63,4 @@ jobs:
           name: ui-screenshots-${{ runner.os }}
           path: ui-screenshots/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
