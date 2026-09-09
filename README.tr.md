@@ -158,8 +158,13 @@ olmasını ister.
   whisper.cpp, temizleme llama.cpp üzerinde; ikisini de önceden kurman gerekmez:
   ayarlar penceresi programı ve modeli indirir, sha256'sını doğrular,
   checksum'suz yayınlanmış bir indirmeyi reddeder, sen dikte ettikçe sunucuyu
-  ayakta tutar. Derleme destekliyorsa ekran kartına CUDA, ROCm ya da Vulkan
+  ayakta tutar ve on dakika kullanılmayan modelin belleğini geri verir. Model
+  listesi dosya boyutuna değil modele göre gruplanır ve bu
+  makinenin belleğine ve ekran kartına uyan satır işaretlenir. Derleme
+  destekliyorsa ekran kartına CUDA, ROCm ya da Vulkan
   üzerinden ulaşılır. Anahtar yok, hesap yok, makineden çıkan bir şey yok.
+  x86_64 Linux'ta aynı düğme, whisper-server'ın Dikte'nin kendi yayınladığı
+  Vulkan derlemesini indirir; upstream'in Linux arşivi yalnızca işlemci için.
 - **Sessizlik API'ye gitmez.** Sessize yakın bir ses verildiğinde model boş dize
   döndürmez, bir cümle uydurur ("Altyazı M.K.", "Thanks for watching"). *O
   kaydın kendi* gürültü tabanının 10 dB üstüne en az 0,3 saniye çıkan bir şey
@@ -209,6 +214,11 @@ olmasını ister.
   yerinde kalır, hiçbir şey kısaltılmaz.
 - **Geçmiş** Ayarlar → Geçmiş sekmesinde; boyut sınırı var, sağ tıklayıp
   silebilirsin.
+- **Konuşma dili seçilmez, algılanır.** Varsayılan otomatiktir: bu makinedeki
+  whisper ne duyduğunu söyler, bulut sağlayıcılar söylenmeden de hangi dilde
+  konuşuluyorsa o dilde yazar; algılanan dil geçmişe düşer ve bir kaydın hangi
+  temizleme promptunu alacağını belirler (Türkçe mi, dile duyarsız olanı mı).
+  Sabit bir dil yine de bunun önüne geçer.
 - **Türkçe ve İngilizce arayüz**, varsayılan olarak sistem dilini izler.
 
 ## Global kısayollar ve KDE'nin istediği oturum kapatma

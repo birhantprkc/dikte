@@ -9,6 +9,7 @@ socket is faked, and everything that runs locally runs for real.
 import contextlib
 import io
 import json
+import sys
 import unittest
 import webbrowser
 from typing import ClassVar
@@ -668,7 +669,11 @@ class WithoutAnInstance(DikteTest):
     def run_verb(self, argv):
         # launch_gui replaces this process with the application, so it never
         # comes back in real use and must not be allowed to here.
+        # `ask` with no text reads what was piped in, and the runner's own
+        # stdin is not that: under pytest it is an object that refuses to be
+        # read at all.
         with mock.patch.object(ipc, "send", return_value=None), \
+                mock.patch.object(sys, "stdin", io.StringIO()), \
                 mock.patch.object(cli, "launch_gui") as launch, \
                 captured() as (out, err):
             code = cli.run(argv)
@@ -741,6 +746,13 @@ class Replies(DikteTest):
         self.assertEqual(code, 0)
         self.assertEqual(out.strip(), "Book it for Thursday.")
 
+    def test_the_json_answer_carries_the_detected_language(self):
+        code, out, _ = self.run_verb(
+            ["--json", "record"],
+            {"ok": True, "text": "Selam", "speech_language": "tr"})
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["speech_language"], "tr")
+
     def test_a_dictation_that_failed(self):
         code, out, err = self.run_verb(["stop", "--wait"],
                                        {"ok": False, "error": "No speech detected"})
@@ -804,18 +816,19 @@ class LocalModels(DikteTest):
         line = self.status({"whisper": self.entry(
             backend="CPU", device="CPU", available=["CPU"])})
         self.assertIn("loaded on the processor", line)
-        self.assertIn("this build carries none", line)
+        self.assertIn("only the CPU backend was loaded", line)
 
-    def test_the_downloaded_build_is_told_where_a_working_one_comes_from(self):
+    def test_a_download_is_not_assumed_to_lack_gpu_support(self):
         line = self.status({"whisper": self.entry(
             backend="CPU", device="CPU", available=["CPU"], downloaded=True)})
-        self.assertIn("downloaded build has no GPU backend", line)
-        self.assertIn("whisper-server on your system", line)
+        self.assertIn("only the CPU backend was loaded", line)
+        self.assertIn("driver errors", line)
+        self.assertNotIn("has no GPU backend", line)
 
     def test_a_card_the_build_could_have_used_says_something_else(self):
         line = self.status({"whisper": self.entry(
             backend="CPU", device="CPU", available=["CUDA", "CPU"])})
-        self.assertIn("none was found", line)
+        self.assertIn("could not be used", line)
         self.assertNotIn("carries none", line)
 
     def test_a_card_nobody_asked_for_is_not_a_complaint(self):
@@ -861,7 +874,31 @@ class LocalModels(DikteTest):
                  "whisper_backend_init_gpu: no GPU found\n")
         line = self.doctor(transcribe_provider="local", local_gpu=True)
         self.assertIn("last run on the processor", line)
-        self.assertIn("this build carries none", line)
+        self.assertNotIn("this build carries none", line)
+        self.assertNotIn("check the server log", line)
+
+    def test_old_cpu_log_does_not_diagnose_a_new_system_binary(self):
+        self.log("load_backend: loaded CPU backend from /old-download.so\n"
+                 "whisper_backend_init_gpu: no GPU found\n")
+        with mock.patch.object(ggml, "program_path",
+                               return_value="/usr/bin/whisper-server"):
+            line = self.doctor(transcribe_provider="local", local_gpu=True)
+            data = self.doctor(as_json=True, transcribe_provider="local",
+                               local_gpu=True)
+        self.assertIn("last run on the processor", line)
+        self.assertNotIn("carries none", line)
+        self.assertNotIn("gpu_wanted", data["local"]["whisper"])
+        self.assertNotIn("downloaded", data["local"]["whisper"])
+
+    def test_enabling_gpu_does_not_reinterpret_a_past_cpu_run(self):
+        self.log("load_backend: loaded Vulkan backend from /gpu.so\n"
+                 "load_backend: loaded CPU backend from /cpu.so\n"
+                 "whisper_init_with_params_no_state: use gpu = 0\n"
+                 "whisper_backend_init_gpu: no GPU found\n")
+        line = self.doctor(transcribe_provider="local", local_gpu=True)
+        self.assertIn("last run on the processor", line)
+        self.assertNotIn("none was found", line)
+        self.assertNotIn("could not be used", line)
 
     def test_a_run_that_named_no_backend_is_not_read_as_no_run_at_all(self):
         # A log with nothing recognisable in it still says a server started

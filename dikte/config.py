@@ -397,7 +397,12 @@ DEFAULTS = {
     "transcribe_model": "gpt-4o-transcribe",           # used when provider is openai
     "groq_transcribe_model": "whisper-large-v3-turbo",
     "openrouter_transcribe_model": "openai/gpt-4o-transcribe",
-    "language": "tr",
+    # What a timestamped run (subtitles) asks OpenRouter for: not every model
+    # there returns segment times. Empty -> openai/whisper-1.
+    "openrouter_file_model": "",
+    # A stored language overrides this default. Hosted providers receive no
+    # language hint in auto mode; local whisper also reports the detected code.
+    "language": "auto",
     "transcribe_prompt": "",
 
     # --- whisper.cpp, on this machine ---------------------------------------
@@ -439,6 +444,15 @@ DEFAULTS = {
     # Off rather than empty: a model trained to think will, and 300 tokens of
     # reasoning about a comma is 300 tokens of waiting.
     "local_llm_reasoning": "none",
+
+    # --- what happens to both of them when nothing is using them -------------
+    # One pair for the two servers rather than a pair each: what is being
+    # decided is whether a machine keeps gigabytes tied up between dictations,
+    # and nobody wants that answered one model at a time. On by default because
+    # a reload costs seconds and the memory costs the rest of the desktop.
+    "local_idle_unload": True,
+    "local_idle_minutes": 10,
+
     "cleanup_prompt": "",           # empty -> language-specific default
     "auto_paste": True,
     "paste_shortcut": paste.desktop().shortcuts[0],   # cmd+v on a Mac
@@ -467,6 +481,9 @@ DEFAULTS = {
     "evdev_hotkey": False,
     "overlay_corner": "bottom-left",
     "overlay_screen": "",
+    # Off, so that an indicator stays where it appeared unless it is asked to
+    # keep up with the pointer. Nothing to say when a screen is named above.
+    "overlay_follows_pointer": False,
     "keep_audio": False,
     "history_limit": 200,
     # A look at the releases page once a day, and nothing more than a look:
@@ -669,8 +686,9 @@ class Config:
             # to land on rather than reading it from there.
             name = "openai"
         who = TRANSCRIBERS[name]
+        file_model = self["openrouter_file_model"] if name == "openrouter" else ""
         return api.Target(name, who.service, self.api_key(who.key),
-                          self[who.url], self[who.model])
+                          self[who.url], self[who.model], file_model.strip())
 
     def transcribe_ready(self):
         """Whether speech to text could run right now, without opening Settings."""
@@ -703,19 +721,37 @@ class Config:
             binary=self["local_llm_binary"],
             context=int(self["local_llm_context"]),
         )
+        ggml.whisper.set_idle(self.idle_seconds())
+        ggml.llm.set_idle(self.idle_seconds())
+
+    def idle_seconds(self):
+        """How long a loaded model may sit unused. 0 means it is kept."""
+        if not self["local_idle_unload"]:
+            return 0
+        return max(1, int(self["local_idle_minutes"])) * 60
 
     def uses_local_llm(self):
         """Whether anything is set to run the local cleanup model."""
         return self["cleanup_provider"] == "local"
 
     def cleanup_prompt(self, with_timestamps=False, with_speakers=False,
-                       subtitles=False):
-        turkish = i18n.language() == "tr"
+                       subtitles=False, speech=""):
+        """`speech` is the two-letter code of the language that was heard, when
+        the transcription model reported one. The default prompts and the
+        glossary rule only exist in Turkish and English, so a detected Turkish
+        recording gets the Turkish prompt and any other detected language, or
+        none at all, the English one, which is written not to care what
+        language the transcript is in. Nothing else calls this with it, so the
+        interface language keeps deciding everywhere the speech was not asked
+        about."""
+        turkish = (speech == "tr") if speech else i18n.language() == "tr"
         if subtitles:
             prompt = (self["file_cleanup_prompt"].strip()
-                      or default_file_cleanup_prompt())
+                      or (FILE_CLEANUP_PROMPT_TR if turkish
+                          else FILE_CLEANUP_PROMPT_EN))
         else:
-            prompt = self["cleanup_prompt"].strip() or default_cleanup_prompt()
+            prompt = (self["cleanup_prompt"].strip()
+                      or (CLEANUP_PROMPT_TR if turkish else CLEANUP_PROMPT_EN))
         glossary = self["transcribe_prompt"].strip()
         if with_speakers:
             glossary = "\n".join(x for x in (glossary, self.participants()) if x)

@@ -161,9 +161,14 @@ running.
 - **It all runs on this machine by default.** Speech to text on whisper.cpp and
   cleanup on llama.cpp, neither installed beforehand: the settings window fetches
   the program and the model, verifies the sha256 and refuses a download published
-  without one, then keeps a server alive while you dictate. The graphics card is
+  without one, then keeps a server alive while you dictate and hands the memory
+  back once it has sat unused for ten minutes. The model list is
+  grouped by model rather than by file size, and the row this machine's memory
+  and graphics can take is marked. The graphics card is
   reached through CUDA, ROCm or Vulkan where the build allows. No key, no
-  account, nothing leaving the machine.
+  account, nothing leaving the machine. On x86_64 Linux the same button fetches
+  a Vulkan build of whisper-server that Dikte publishes itself, because
+  upstream's Linux archive is processor-only.
 - **Silence never reaches the API.** Handed near-silence, a transcription model
   invents a sentence instead of returning nothing ("Thanks for watching", or in
   Turkish "Altyazı M.K."). A recording is dropped when nothing rose 10 dB above
@@ -215,6 +220,11 @@ running.
   written for subtitles, so the lines keep their place and nothing is shortened.
 - **History** of every dictation under Settings → History, with a size limit and
   right-click to delete.
+- **The speech language is detected, not picked.** Auto is the default: whisper
+  on this machine says what it heard, the hosted providers transcribe in
+  whatever language comes in without being told, and the detected language
+  lands in the history and decides which cleanup prompt (Turkish or the
+  language-agnostic one) a run gets. A fixed language still overrides it.
 - **Turkish and English interface**, following the system locale by default.
 
 ## The global shortcuts, and the logout KDE needs

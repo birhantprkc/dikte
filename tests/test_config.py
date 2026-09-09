@@ -220,6 +220,19 @@ class TranscribeTarget(DikteTest):
         self.assertEqual(target.service, "OpenRouter")
         self.assertEqual(target.api_key, "sk-or-test")
         self.assertEqual(target.model, "openai/whisper-1")
+        self.assertEqual(target.file_model, "")
+
+    def test_openrouter_carries_its_file_model(self):
+        conf = self.config(transcribe_provider="openrouter",
+                           openrouter_api_key="sk-or-test",
+                           openrouter_file_model=" openai/whisper-large-v3 ")
+        self.assertEqual(conf.transcribe_target().file_model,
+                         "openai/whisper-large-v3")
+
+    def test_only_openrouter_has_a_file_model(self):
+        conf = self.config(transcribe_provider="openai", openai_api_key="sk-test",
+                           openrouter_file_model="openai/whisper-large-v3")
+        self.assertEqual(conf.transcribe_target().file_model, "")
 
     def test_groq_when_it_is_picked(self):
         conf = self.config(transcribe_provider="groq", groq_api_key="gsk-test",
@@ -260,6 +273,18 @@ class CleanupPrompt(DikteTest):
 
     def test_no_glossary_means_no_rule_about_one(self):
         self.assertEqual(cfg.Config().cleanup_prompt(), cfg.CLEANUP_PROMPT_EN)
+
+    def test_a_detected_turkish_recording_gets_the_turkish_prompt(self):
+        """Auto mode learns what was heard, and that decides the prompt rather
+        than the interface language."""
+        self.write_config({"ui_language": "en", "transcribe_prompt": "Paraşüt"})
+        conf = cfg.Config()
+        prompt = conf.cleanup_prompt(speech="tr")
+        self.assertEqual(prompt, cfg.CLEANUP_PROMPT_TR
+                         + cfg.GLOSSARY_RULE_TR.format(glossary="Paraşüt"))
+        self.assertIn("KONUŞMACININ KULLANDIĞI İSİM VE TERİMLER", prompt)
+        self.assertIn("NAMES AND TERMS THE SPEAKER USES",
+                      conf.cleanup_prompt(speech="de"))
 
     def test_subtitles_use_their_own_prompt(self):
         conf = cfg.Config()
@@ -676,3 +701,24 @@ class ReadyToRun(DikteTest):
         self.assertEqual(ggml.whisper.settings()["threads"], 4)
         self.assertFalse(ggml.whisper.settings()["gpu"])
         self.assertEqual(ggml.llm.settings()["context"], 4096)
+
+    def test_the_idle_window_is_in_seconds(self):
+        conf = self.config(local_idle_unload=True, local_idle_minutes=15)
+        self.assertEqual(conf.idle_seconds(), 900)
+
+    def test_an_unchecked_box_keeps_the_model(self):
+        conf = self.config(local_idle_unload=False, local_idle_minutes=15)
+        self.assertEqual(conf.idle_seconds(), 0)
+
+    def test_a_window_of_no_minutes_is_still_a_window(self):
+        """The spin box will not go below one; a config edited by hand can."""
+        conf = self.config(local_idle_unload=True, local_idle_minutes=0)
+        self.assertEqual(conf.idle_seconds(), 60)
+
+    def test_both_servers_are_told_the_window(self):
+        conf = self.config(local_idle_unload=True, local_idle_minutes=3)
+        self.addCleanup(ggml.llm.set_idle, 0)
+        self.addCleanup(ggml.whisper.set_idle, 0)
+        conf.apply_local()
+        self.assertEqual(ggml.whisper.idle, 180)
+        self.assertEqual(ggml.llm.idle, 180)

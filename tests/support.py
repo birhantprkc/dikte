@@ -112,6 +112,10 @@ class DikteTest(unittest.TestCase):
         i18n.set_language("en")
         self.addCleanup(i18n.set_language, "en")
 
+        # Read once and kept for the life of the process, which across a test
+        # run means one test's machine answering for the next one's.
+        self.patch_attr(ggml, "_MEMORY", None)
+
         # cli.launch_gui replaces this process with the application when no
         # instance is running. A test that reaches it would take the whole run
         # with it and hang, so it fails loudly here instead.

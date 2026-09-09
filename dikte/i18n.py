@@ -189,8 +189,10 @@ TR = {
     "Restore the previous clipboard after pasting":
         "Yapıştırdıktan sonra eski pano içeriğini geri koy",
     "Indicator screen": "Gösterge ekranı",
-    "Follow the mouse pointer": "Fare imlecini takip et",
+    "Follow the active screen": "Etkin ekranı takip et",
     "{name} (not connected)": "{name} (bağlı değil)",
+    "Move it when the active screen changes":
+        "Etkin ekran değiştiğinde göstergeyi de taşı",
     "Indicator corner": "Gösterge köşesi",
     "bottom-left": "sol-alt",
     "bottom-right": "sağ-alt",
@@ -228,6 +230,11 @@ TR = {
     "Transcript cleanup": "Transkripti temizleme",
     "API key": "API anahtarı",
     "Model": "Model",
+    "Audio file model": "Ses dosyası modeli",
+    "The model a timestamped audio file (subtitles) is sent to. Not every model on "
+    "OpenRouter returns segment times; empty means openai/whisper-1.":
+        "Zaman damgalı bir ses dosyasının (altyazı) gönderildiği model. OpenRouter'daki her "
+        "model segment zamanı döndürmez; boşsa openai/whisper-1 kullanılır.",
     "Provider": "Sağlayıcı",
     "sk-… (falls back to OPENAI_API_KEY)": "sk-… (boşsa OPENAI_API_KEY kullanılır)",
     "gsk_… (falls back to GROQ_API_KEY)": "gsk_… (boşsa GROQ_API_KEY kullanılır)",
@@ -775,6 +782,26 @@ TR = {
     "On this machine": "Bu makinede",
     "Use the graphics card": "Ekran kartını kullan",
     "Load the model when Dikte starts": "Modeli Dikte açılırken yükle",
+    "Models on this machine": "Bu makinedeki modeller",
+    "Unload a model that is sitting unused": "Kullanılmayan modeli bellekten çıkar",
+    "A loaded model holds its memory whether anything is using it or "
+    "not: over a gigabyte for whisper, several for an LLM. Unloading "
+    "gives that back to the rest of the desktop, and the next "
+    "dictation loads it again at the cost of the seconds that takes.":
+        "Yüklü bir model, kullanılsa da kullanılmasa da belleği tutar: whisper "
+        "için bir gigabaytın üzerinde, bir LLM için birkaç gigabayt. Bellekten "
+        "çıkarmak bunu masaüstünün geri kalanına iade eder, sonraki dikte de "
+        "modeli birkaç saniye bekleyerek yeniden yükler.",
+    " minute": " dakika",
+    " minutes": " dakika",
+    "After": "Şu kadar sonra",
+    "Unload the model": "Modeli bellekten çıkar",
+    "Unload the models": "Modelleri bellekten çıkar",
+    "No model loaded": "Yüklü model yok",
+    "A model is loading or answering right now. Try again in a "
+    "moment.":
+        "Bir model şu anda yükleniyor ya da cevap veriyor. Az sonra tekrar "
+        "deneyin.",
     "Local whisper": "Yerel whisper",
     "Local model": "Yerel model",
     "Not loaded.": "Yüklü değil.",
@@ -783,31 +810,105 @@ TR = {
     "Loaded on the graphics card ({detail}).":
         "Ekran kartına yüklendi ({detail}).",
     "Loaded on the processor ({detail}).": "İşlemciye yüklendi ({detail}).",
-    "Loaded on the processor: the build Dikte downloaded carries no graphics "
-    "backend. A {binary} from your own system is used ahead of it, so "
-    "installing one is what reaches the card.":
-        "İşlemciye yüklendi: Dikte'nin indirdiği sürümde ekran kartı arka ucu "
-        "yok. Sistemdeki bir {binary} indirilene tercih edilir, yani karta "
-        "ulaşmanın yolu onu kurmak.",
-    "Loaded on the processor: this {binary} carries no graphics backend, so "
-    "the box above cannot change that.":
-        "İşlemciye yüklendi: bu {binary} ekran kartı arka ucu taşımıyor, "
-        "yukarıdaki kutu bunu değiştiremez.",
-    "Loaded on the processor: the graphics card is switched on, but none was "
-    "found.":
-        "İşlemciye yüklendi: ekran kartı açık, ama bulunamadı.",
+    "Loaded on the processor: only the CPU backend was loaded. Check the "
+    "server log for graphics backend or driver errors.":
+        "İşlemciye yüklendi: yalnızca CPU arka ucu yüklendi. Ekran kartı arka "
+        "ucu veya sürücü hataları için sunucu günlüğünü kontrol edin.",
+    "Loaded on the processor: the graphics card is switched on, but could not "
+    "be used.":
+        "İşlemciye yüklendi: ekran kartı açık, ama kullanılamadı.",
     "Not installed.": "Kurulu değil.",
     "Installed on the system: {path}": "Sistemde kurulu: {path}",
+    "Download again": "Yeniden indir",
     "Downloaded, version {version}.": "İndirildi, sürüm {version}.",
+    "Downloaded, version {version}. There was no Vulkan build, "
+    "so this one runs on the processor.":
+        "İndirildi, sürüm {version}. Vulkan sürümü yoktu, bu sürüm işlemcide çalışıyor.",
     "Fetching the model list…": "Model listesi çekiliyor…",
     "Downloading…": "İndiriliyor…",
+    "Starting the download…": "İndirme başlatılıyor…",
     "Downloading: {done} of {total}{share}": "İndiriliyor: {done} / {total}{share}",
     "Download stopped.": "İndirme durduruldu.",
     "Ready: {name}.": "Hazır: {name}.",
     "Nothing downloaded yet.": "Henüz bir şey indirilmedi.",
     "{name} has not been downloaded yet.": "{name} henüz indirilmedi.",
+    "{name} is here, but the program above is not. Download it first.":
+        "{name} burada, ama yukarıdaki program değil. Önce onu indirin.",
+    "{name} is not on this machine and this publisher does not offer it. "
+    "Choose another model, or another publisher.":
+        "{name} bu makinede yok ve bu yayıncı da sunmuyor. Başka bir model, "
+        "ya da başka bir yayıncı seçin.",
     "downloaded": "indirildi",
     "not downloaded": "indirilmedi",
+    "recommended": "önerilen",
+    "{bits}-bit": "{bits} bit",
+    "English only": "yalnızca İngilizce",
+    "All": "Tümü",
+    "Everything ggml-org publishes, including the models that are too big to "
+    "run here and the ones that are not for cleaning up text.":
+        "ggml-org'un yayımladığı her şey; burada çalıştırılamayacak kadar "
+        "büyük olanlar ve metin temizlemek için olmayanlar dahil.",
+    "Google Gemma 4, the small one. The default: nothing else this size "
+    "follows an instruction as closely, and cleanup is all instruction.":
+        "Google Gemma 4'ün küçüğü. Varsayılan: bu boyutta verilen yönergeyi "
+        "bu kadar iyi izleyen başka bir model yok, temizleme de baştan sona "
+        "yönerge demek.",
+    "The same model one size up. A little more accurate, about twice the "
+    "weights and twice the wait.":
+        "Aynı modelin bir boy büyüğü. Biraz daha isabetli, yaklaşık iki katı "
+        "ağırlık ve iki katı bekleyiş.",
+    "The previous Gemma. Still good, and the smallest of the Gemmas here.":
+        "Bir önceki Gemma. Hâlâ iyi ve buradaki Gemma'ların en küçüğü.",
+    "Hugging Face's own small model, for a machine the Gemmas crowd.":
+        "Hugging Face'in kendi küçük modeli; Gemma'ların sıkıştırdığı bir "
+        "makine için.",
+    "The smallest of them, for a machine nothing else fits on. It thinks "
+    "before it answers unless Thinking below is off.":
+        "En küçükleri; başka hiçbir şeyin sığmadığı bir makine için. "
+        "Aşağıdaki Düşünme kapalı değilse cevaplamadan önce düşünür.",
+    "too big for this machine": "bu makine için fazla büyük",
+    "This machine": "Bu makine",
+    "Graphics: {name}.": "Ekran kartı: {name}.",
+    "No graphics interface found, so this runs on the processor.":
+        "Ekran kartı arayüzü bulunamadı, bu yüzden işlemcide çalışıyor.",
+    "Memory: {size}.": "Bellek: {size}.",
+    "A model may take half of this memory, less a gigabyte for the context "
+    "around the weights. Anything past that is marked too big; it may still "
+    "load, on a machine with nothing else open.":
+        "Bir model bu belleğin yarısını, ağırlıkların çevresindeki bağlam için "
+        "bir gigabayt düşülerek kullanabilir. Bunu aşan modeller fazla büyük "
+        "diye işaretlenir; başka hiçbir şeyin açık olmadığı bir makinede yine "
+        "de yüklenebilirler.",
+    "Recommended for this machine": "Bu makine için önerilen",
+    "Everything this publisher offers": "Bu yayıncının sunduğu her şey",
+    "Already on this machine": "Bu makinede zaten var",
+    "Chosen, but not downloaded": "Seçili, ama indirilmedi",
+    "{repo} publishes nothing that can be run here. Its models are split "
+    "across files, larger than {cap}, or pieces of a model rather than one. "
+    "Choose another publisher.":
+        "{repo} burada çalıştırılabilecek bir şey yayımlamıyor. Modelleri "
+        "birden çok dosyaya bölünmüş, {cap} boyutundan büyük ya da modelin "
+        "kendisi değil parçaları. Başka bir yayıncı seçin.",
+    "large-v3 makes the fewest mistakes and is the slowest of them. "
+    "large-v3-turbo is that model with a four layer decoder in place of a "
+    "thirty-two layer one: several times faster, at one to two points of word "
+    "error in English and about two and a half in the other languages. Below "
+    "those, every step down the list trades accuracy for size, and the .en "
+    "models are trained on English alone.":
+        "En az hatayı large-v3 yapar, en yavaşı da odur. large-v3-turbo, aynı "
+        "modelin otuz iki katmanlı çözücüsü yerine dört katmanlı bir çözücü "
+        "konmuş hâli: birkaç kat hızlı, karşılığında İngilizcede bir iki "
+        "puan, diğer dillerde yaklaşık iki buçuk puan kelime hatası. Bunların "
+        "altında listede her basamak, doğruluğu boyuta değişir; .en modelleri "
+        "ise yalnızca İngilizce ile eğitilmiştir.",
+    "Cleanup is punctuation, capitals and filler words, so what these are "
+    "picked on is following an instruction rather than knowing anything. "
+    "Start at a q4 file; the 16-bit ones are several times the memory for a "
+    "difference this job cannot see.":
+        "Temizleme; noktalama, büyük harf ve dolgu sözcükleri demek, yani bu "
+        "modeller bir şey bilmelerine değil verilen yönergeyi izlemelerine "
+        "göre seçilir. Bir q4 dosyasından başlayın; 16 bitlik olanlar, bu işin "
+        "göremeyeceği bir fark için kat kat bellek ister.",
     "Delete model": "Modeli sil",
     "Delete {name} from this machine?": "{name} bu makineden silinsin mi?",
     "Runs on this machine, on llama.cpp.": "Bu makinede, llama.cpp üzerinde çalışır.",
@@ -891,6 +992,10 @@ TR = {
     "“Off”.":
         "Temizleme modeli bütün yanıtını düşünmeye harcadı. Düşünme'yi "
         "“Kapalı” yap.",
+    "The cleanup model was cut off before it finished.":
+        "Temizleme modeli bitiremeden kesildi.",
+    "The model was cut off before it finished.":
+        "Model bitiremeden kesildi.",
 
     # --- this pass's new messages ---------------------------------------
     "Audio recorder stopped before receiving sound":
