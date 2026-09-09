@@ -400,7 +400,9 @@ DEFAULTS = {
     # What a timestamped run (subtitles) asks OpenRouter for: not every model
     # there returns segment times. Empty -> openai/whisper-1.
     "openrouter_file_model": "",
-    "language": "tr",
+    # A stored language overrides this default. Hosted providers receive no
+    # language hint in auto mode; local whisper also reports the detected code.
+    "language": "auto",
     "transcribe_prompt": "",
 
     # --- whisper.cpp, on this machine ---------------------------------------
@@ -733,13 +735,23 @@ class Config:
         return self["cleanup_provider"] == "local"
 
     def cleanup_prompt(self, with_timestamps=False, with_speakers=False,
-                       subtitles=False):
-        turkish = i18n.language() == "tr"
+                       subtitles=False, speech=""):
+        """`speech` is the two-letter code of the language that was heard, when
+        the transcription model reported one. The default prompts and the
+        glossary rule only exist in Turkish and English, so a detected Turkish
+        recording gets the Turkish prompt and any other detected language, or
+        none at all, the English one, which is written not to care what
+        language the transcript is in. Nothing else calls this with it, so the
+        interface language keeps deciding everywhere the speech was not asked
+        about."""
+        turkish = (speech == "tr") if speech else i18n.language() == "tr"
         if subtitles:
             prompt = (self["file_cleanup_prompt"].strip()
-                      or default_file_cleanup_prompt())
+                      or (FILE_CLEANUP_PROMPT_TR if turkish
+                          else FILE_CLEANUP_PROMPT_EN))
         else:
-            prompt = self["cleanup_prompt"].strip() or default_cleanup_prompt()
+            prompt = (self["cleanup_prompt"].strip()
+                      or (CLEANUP_PROMPT_TR if turkish else CLEANUP_PROMPT_EN))
         glossary = self["transcribe_prompt"].strip()
         if with_speakers:
             glossary = "\n".join(x for x in (glossary, self.participants()) if x)
