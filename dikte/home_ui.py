@@ -311,7 +311,8 @@ class HomeWindow(QWidget):
         layout.addWidget(_button(t("Back to dictation"), lambda: self.show_mode("dictation")))
         layout.addWidget(self.settings.task_pages["history"], 1)
         self.settings.task_pages["history"].show()
-        layout.addWidget(_button(t("Open selected text"), self._open_selected))
+        actions = self.settings.history_actions
+        actions.insertWidget(actions.count() - 1, _button(t("Open selected text"), self._open_selected))
         self.settings.history.itemDoubleClicked.connect(self._open_selected)
         return page
 

@@ -1985,6 +1985,7 @@ class SettingsWindow(QDialog):
         reload_ = QPushButton(t("Reload"))
         reload_.clicked.connect(self._load_minutes)
         row = QHBoxLayout()
+        row.addStretch()
         row.addWidget(copy)
         row.addWidget(self.minutes_retry)
         row.addWidget(folder)
@@ -2188,16 +2189,13 @@ class SettingsWindow(QDialog):
         clear.clicked.connect(self._clear_history)
         reload_ = QPushButton(t("Reload"))
         reload_.clicked.connect(self._load_history)
-        row = QHBoxLayout()
+        self.history_actions = row = QHBoxLayout()
         row.addWidget(copy)
         row.addWidget(delete)
+        row.addWidget(clear)
+        row.addWidget(reload_)
         row.addStretch()
         layout.addLayout(row)
-        more = QHBoxLayout()
-        more.addWidget(clear)
-        more.addWidget(reload_)
-        more.addStretch()
-        layout.addLayout(more)
         return page
 
     @staticmethod
