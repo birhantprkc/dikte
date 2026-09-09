@@ -9,6 +9,7 @@ is blocked on, and a faked urlopen has no socket to cut, so those tests talk to
 a server of their own on the loopback interface.
 """
 
+import contextlib
 import http.server
 import json
 import os
@@ -52,6 +53,16 @@ class TimestampModel(unittest.TestCase):
     def test_the_others_ignore_what_was_chosen(self):
         self.assertEqual(api.timestamp_model("openai", "gpt-4o-transcribe"),
                          "whisper-1")
+
+    def test_openrouter_takes_the_file_model_that_was_set(self):
+        self.assertEqual(
+            api.timestamp_model("openrouter", "openai/gpt-4o-transcribe",
+                                "openai/whisper-large-v3"),
+            "openai/whisper-large-v3")
+
+    def test_openrouter_with_no_file_model_falls_back_to_whisper(self):
+        self.assertEqual(api.timestamp_model("openrouter", "openai/gpt-4o-transcribe", ""),
+                         "openai/whisper-1")
 
 
 class Explain(DikteTest):
@@ -311,12 +322,24 @@ class TranscribeSegments(DikteTest):
         fields = multipart_fields(calls[0])
         self.assertEqual(fields["model"], "whisper-1")
         self.assertEqual(fields["response_format"], "verbose_json")
-        self.assertEqual(fields["timestamp_granularities[]"], "segment")
+        # Both are asked for: whisper answers with segments, and a model that
+        # does not mark them still answers with word times.
+        body = calls[0].data.decode("utf-8", "replace")
+        for level in ("segment", "word"):
+            self.assertIn(
+                f'name="timestamp_granularities[]"\r\n\r\n{level}\r\n', body)
 
     def test_openrouter_uses_the_namespaced_id(self):
         with fake_urlopen(self.reply([{"start": 0, "end": 1, "text": "hi"}])) as calls:
             api.transcribe_segments(OPENROUTER, self.wav)
         self.assertEqual(multipart_fields(calls[0])["model"], "openai/whisper-1")
+
+    def test_openrouter_asks_for_the_file_model_when_one_is_set(self):
+        target = OPENROUTER._replace(file_model="mistralai/voxtral-mini-transcribe")
+        with fake_urlopen(self.reply([{"start": 0, "end": 1, "text": "hi"}])) as calls:
+            api.transcribe_segments(target, self.wav)
+        self.assertEqual(multipart_fields(calls[0])["model"],
+                         "mistralai/voxtral-mini-transcribe")
 
     def test_groq_stays_on_the_model_it_was_given(self):
         target = GROQ._replace(model="whisper-large-v3")
@@ -344,6 +367,74 @@ class TranscribeSegments(DikteTest):
         with fake_urlopen(self.reply([{"start": 5, "end": 1, "text": "hi"}])):
             self.assertEqual(api.transcribe_segments(OPENAI, self.wav),
                              [(5.0, 5.0, "hi")])
+
+    def test_a_long_sentence_is_broken_where_it_gets_too_long_to_read(self):
+        words = [{"word": "word", "start": i * 0.2, "end": i * 0.2 + 0.2}
+                 for i in range(60)]
+        cues = api.cues_from_words(words)
+        self.assertGreater(len(cues), 1)
+        for start, end, text in cues:
+            self.assertLessEqual(len(text), api.MAX_CUE_CHARS)
+            self.assertLessEqual(end - start, api.MAX_CUE_SECONDS + 0.2)
+
+    def test_a_pause_between_short_sentences_does_not_join_them(self):
+        cues = api.cues_from_words([
+            {"word": "Yes.", "start": 0.0, "end": 0.3},
+            {"word": "No.", "start": 9.0, "end": 9.3},
+        ])
+        self.assertEqual([(start, text) for start, _, text in cues],
+                         [(0.0, "Yes."), (9.0, "No.")])
+
+    def test_a_cue_too_short_to_read_is_held_until_the_next_one(self):
+        cues = api.cues_from_words([
+            {"word": "Yes.", "start": 0.0, "end": 0.3},
+            {"word": "No.", "start": 9.0, "end": 9.3},
+        ])
+        # The first has the room for it, the last has nothing after it to wait for.
+        self.assertEqual(cues[0][1], api.MIN_CUE_SECONDS)
+        self.assertEqual(cues[1][1], 9.0 + api.MIN_CUE_SECONDS)
+
+    def test_a_list_marker_does_not_end_a_cue_on_its_own(self):
+        cues = api.cues_from_words([
+            {"word": "1.", "start": 0.0, "end": 0.2},
+            {"word": "Antivirus.", "start": 0.4, "end": 1.6},
+        ])
+        self.assertEqual([text for _, _, text in cues], ["1. Antivirus."])
+
+    def test_a_sentence_ending_inside_a_quote_still_ends_the_cue(self):
+        cues = api.cues_from_words([
+            {"word": '"Stop', "start": 0.0, "end": 1.0},
+            {"word": 'there."', "start": 1.1, "end": 2.0},
+            {"word": "Then", "start": 2.2, "end": 2.6},
+        ])
+        self.assertEqual([text for _, _, text in cues],
+                         ['"Stop there."', "Then"])
+
+    def test_word_times_take_over_from_segments_too_long_to_read(self):
+        # What a model that does not mark segments answers with: one entry for
+        # the whole file, and the real timing in the words beside it.
+        reply = {
+            "text": "One. Two.",
+            "segments": [{"start": 0, "end": 60, "text": "One. Two."}],
+            "words": [
+                {"word": "One.", "start": 0.1, "end": 1.5},
+                {"word": "Two.", "start": 1.7, "end": 3.0},
+            ],
+        }
+        with fake_urlopen(reply):
+            self.assertEqual(api.transcribe_segments(OPENAI, self.wav),
+                             [(0.1, 1.5, "One."), (1.7, 3.0, "Two.")])
+
+    def test_whisper_segments_are_left_alone_when_words_come_too(self):
+        reply = {
+            "text": "hi there",
+            "segments": [{"start": 0, "end": 2, "text": "hi there"}],
+            "words": [{"word": "hi", "start": 0.0, "end": 0.5},
+                      {"word": "there", "start": 0.5, "end": 2.0}],
+        }
+        with fake_urlopen(reply):
+            self.assertEqual(api.transcribe_segments(OPENAI, self.wav),
+                             [(0.0, 2.0, "hi there")])
 
     def test_a_model_that_returned_no_segments_still_gives_its_text(self):
         with fake_urlopen(self.reply([], text="the whole thing")):
@@ -446,6 +537,29 @@ class Cleanup(DikteTest):
         with fake_urlopen(chat_reply("   ")), self.assertRaises(api.ApiError):
             api.cleanup("hello", "k", "m", "p")
 
+    def test_a_reply_cut_off_at_a_ceiling_is_refused_rather_than_pasted(self):
+        # Half a sentence looks like a cleaned-up transcript and is not one. The
+        # caller keeps what it was given, which is the whole dictation.
+        reply = {"choices": [{"message": {"content": "Hello, and then the"},
+                              "finish_reason": "length"}]}
+        with fake_urlopen(reply), self.assertRaises(api.ApiError) as caught:
+            api.cleanup("hello", "k", "m", "p")
+        self.assertIn("cut off", str(caught.exception))
+
+    def test_a_reply_that_stopped_on_its_own_is_kept(self):
+        reply = {"choices": [{"message": {"content": "Hello."},
+                              "finish_reason": "stop"}]}
+        with fake_urlopen(reply):
+            self.assertEqual(api.cleanup("hello", "k", "m", "p"), "Hello.")
+
+    def test_all_thinking_is_named_before_the_ceiling_it_was_cut_at(self):
+        """Both are true at once, and only one of them says what to change."""
+        reply = {"choices": [{"message": {"content": "", "reasoning": "hmm"},
+                              "finish_reason": "length"}]}
+        with fake_urlopen(reply), self.assertRaises(api.ApiError) as caught:
+            api.cleanup("hello", "k", "m", "p")
+        self.assertIn("Thinking", str(caught.exception))
+
     def test_a_rate_limit_is_explained(self):
         with fake_urlopen(http_error(429)), \
                 self.assertRaises(api.ApiError) as caught:
@@ -454,6 +568,14 @@ class Cleanup(DikteTest):
 
 
 class Chat(DikteTest):
+    def test_an_answer_cut_off_at_a_ceiling_is_refused_rather_than_pasted(self):
+        # Half an answer reads like a whole one once it is on the screen.
+        reply = {"choices": [{"message": {"content": "Booked it for the"},
+                              "finish_reason": "length"}]}
+        with fake_urlopen(reply), self.assertRaises(api.ApiError) as caught:
+            api.chat([{"role": "user", "content": "book it"}], "k", "m", "p")
+        self.assertIn("cut off", str(caught.exception))
+
     def test_the_history_is_sent_after_the_system_prompt(self):
         history = [{"role": "user", "content": "book it"},
                    {"role": "assistant", "content": "done"}]
@@ -599,11 +721,14 @@ if __name__ == "__main__":
 class FakeServer:
     """A ggml.Server as far as api.py is concerned."""
 
-    def __init__(self, url="http://127.0.0.1:9999/v1", fails="", log=""):
+    def __init__(self, url="http://127.0.0.1:9999/v1", fails="", log="",
+                 context=8192):
         self.url = url
         self.fails = fails
         self.log = log
         self.starts = 0
+        self.held = 0
+        self.context = context
 
     def serve(self):
         self.starts += 1
@@ -611,8 +736,19 @@ class FakeServer:
             raise ggml.LocalError(self.fails)
         return self.url
 
+    @contextlib.contextmanager
+    def busy(self):
+        self.held += 1
+        try:
+            yield
+        finally:
+            self.held -= 1
+
     def error(self):
         return self.log
+
+    def settings(self):
+        return {"context": self.context}
 
 
 LOCAL = api.Target("local", "Local whisper", "", "", "ggml-base.bin")

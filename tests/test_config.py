@@ -189,6 +189,8 @@ class Keys(DikteTest):
             self.assertEqual(cfg.Config().groq_key(), "gsk-env")
         with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "AIza-env"}):
             self.assertEqual(cfg.Config().gemini_key(), "AIza-env")
+        with mock.patch.dict(os.environ, {"OPENCODE_API_KEY": "opencode-env"}):
+            self.assertEqual(cfg.Config().opencode_key(), "opencode-env")
 
 
 class TranscribeTarget(DikteTest):
@@ -218,6 +220,19 @@ class TranscribeTarget(DikteTest):
         self.assertEqual(target.service, "OpenRouter")
         self.assertEqual(target.api_key, "sk-or-test")
         self.assertEqual(target.model, "openai/whisper-1")
+        self.assertEqual(target.file_model, "")
+
+    def test_openrouter_carries_its_file_model(self):
+        conf = self.config(transcribe_provider="openrouter",
+                           openrouter_api_key="sk-or-test",
+                           openrouter_file_model=" openai/whisper-large-v3 ")
+        self.assertEqual(conf.transcribe_target().file_model,
+                         "openai/whisper-large-v3")
+
+    def test_only_openrouter_has_a_file_model(self):
+        conf = self.config(transcribe_provider="openai", openai_api_key="sk-test",
+                           openrouter_file_model="openai/whisper-large-v3")
+        self.assertEqual(conf.transcribe_target().file_model, "")
 
     def test_groq_when_it_is_picked(self):
         conf = self.config(transcribe_provider="groq", groq_api_key="gsk-test",
@@ -589,11 +604,18 @@ class Defaults(unittest.TestCase):
         self.assertEqual(cfg.DEFAULTS["openai_api_key"], "")
         self.assertEqual(cfg.DEFAULTS["openrouter_api_key"], "")
         self.assertEqual(cfg.DEFAULTS["gemini_api_key"], "")
+        self.assertEqual(cfg.DEFAULTS["opencode_api_key"], "")
 
     def test_google_ai_studio_is_a_cleanup_provider_and_not_a_transcriber(self):
         """Its compatible endpoint has no /audio/transcriptions behind it."""
         self.assertNotIn("gemini", cfg.TRANSCRIBERS)
         self.assertIn("gemini", cleanup.PROVIDERS)
+
+    def test_opencode_ships_on_its_own_endpoint(self):
+        self.assertEqual(cfg.DEFAULTS["opencode_base_url"],
+                         "https://opencode.ai/zen/go/v1")
+        self.assertEqual(cfg.DEFAULTS["cleanup_opencode_model"], "deepseek-v4-flash")
+        self.assertEqual(cfg.DEFAULTS["assistant_opencode_model"], "deepseek-v4-flash")
 
     def test_every_language_specific_prompt_has_both_languages(self):
         for name in ("CLEANUP_PROMPT", "FILE_CLEANUP_PROMPT", "MEETING_PROMPT",
@@ -679,3 +701,24 @@ class ReadyToRun(DikteTest):
         self.assertEqual(ggml.whisper.settings()["threads"], 4)
         self.assertFalse(ggml.whisper.settings()["gpu"])
         self.assertEqual(ggml.llm.settings()["context"], 4096)
+
+    def test_the_idle_window_is_in_seconds(self):
+        conf = self.config(local_idle_unload=True, local_idle_minutes=15)
+        self.assertEqual(conf.idle_seconds(), 900)
+
+    def test_an_unchecked_box_keeps_the_model(self):
+        conf = self.config(local_idle_unload=False, local_idle_minutes=15)
+        self.assertEqual(conf.idle_seconds(), 0)
+
+    def test_a_window_of_no_minutes_is_still_a_window(self):
+        """The spin box will not go below one; a config edited by hand can."""
+        conf = self.config(local_idle_unload=True, local_idle_minutes=0)
+        self.assertEqual(conf.idle_seconds(), 60)
+
+    def test_both_servers_are_told_the_window(self):
+        conf = self.config(local_idle_unload=True, local_idle_minutes=3)
+        self.addCleanup(ggml.llm.set_idle, 0)
+        self.addCleanup(ggml.whisper.set_idle, 0)
+        conf.apply_local()
+        self.assertEqual(ggml.whisper.idle, 180)
+        self.assertEqual(ggml.llm.idle, 180)

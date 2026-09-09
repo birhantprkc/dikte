@@ -60,6 +60,7 @@ class Provider(DikteTest):
         self.assertEqual(cleanup.executable("agy"), "agy")
         self.assertEqual(cleanup.executable("openrouter"), "")
         self.assertEqual(cleanup.executable("gemini"), "")
+        self.assertEqual(cleanup.executable("opencode"), "")
 
     def test_the_model_named_in_the_history_is_the_one_that_did_it(self):
         self.assertEqual(cleanup.model(self.config(cleanup_model="some/model")),
@@ -85,6 +86,9 @@ class Provider(DikteTest):
             cleanup.model(self.config(cleanup_provider="agy",
                                       cleanup_agy_model="gemini-3.7-flash-low")),
             "gemini-3.7-flash-low")
+        self.assertEqual(
+            cleanup.model(self.config(cleanup_provider="opencode",
+                                      cleanup_opencode_model="glm-5.3")), "glm-5.3")
 
 
 class OpenRouter(DikteTest):
@@ -100,6 +104,32 @@ class OpenRouter(DikteTest):
 
     def test_no_cli_is_started_for_it(self):
         conf = self.config(openrouter_api_key="sk-or-test")
+        patcher, calls = fake_cli(stdout="never")
+        with patcher, mock.patch.object(api, "cleanup", return_value="Done."):
+            cleanup.run("uh, done", conf, "the rules")
+        self.assertEqual(calls, [])
+
+
+class OpenCode(DikteTest):
+    def test_it_is_one_request_with_the_settings_as_they_were(self):
+        conf = self.config(cleanup_provider="opencode",
+                           opencode_api_key="opencode-test-key",
+                           cleanup_opencode_model="some/model",
+                           cleanup_reasoning="low")
+        with mock.patch.object(api, "cleanup", return_value="Done.") as call:
+            self.assertEqual(cleanup.run("uh, done", conf, "the rules"), "Done.")
+        text, key, model, prompt = call.call_args.args
+        self.assertEqual((text, key, model, prompt),
+                         ("uh, done", "opencode-test-key", "some/model", "the rules"))
+        self.assertEqual(call.call_args.kwargs["reasoning"], "low")
+        self.assertEqual(call.call_args.kwargs["provider"], "opencode")
+        self.assertEqual(call.call_args.kwargs["service"], "OpenCode Go")
+        self.assertEqual(call.call_args.kwargs["base_url"],
+                         "https://opencode.ai/zen/go/v1")
+
+    def test_no_cli_is_started_for_it(self):
+        conf = self.config(cleanup_provider="opencode",
+                           opencode_api_key="opencode-test-key")
         patcher, calls = fake_cli(stdout="never")
         with patcher, mock.patch.object(api, "cleanup", return_value="Done."):
             cleanup.run("uh, done", conf, "the rules")
@@ -380,6 +410,52 @@ class Here(DikteTest):
         with fake_urlopen(chat_reply("Done.")) as calls:
             cleanup.run("uh, done", self.conf, "the rules")
         self.assertEqual(sent_json(calls[0])["max_tokens"], 512)
+
+    def test_thinking_is_given_room_of_its_own_rather_than_the_answer_s(self):
+        # llama.cpp counts the thinking towards the same ceiling, so a rung that
+        # took its budget out of the answer would leave a short dictation with
+        # nothing to reply with. On a context roomy enough that the clamp the
+        # top rung would otherwise meet is not what is being measured.
+        self.patch_attr(ggml, "llm", FakeServer(context=32768))
+        for rung, room in api.THINKING_ROOM.items():
+            with self.subTest(rung=rung):
+                self.conf["local_llm_reasoning"] = rung
+                with fake_urlopen(chat_reply("Done.")) as calls:
+                    cleanup.run("uh, done", self.conf, "the rules")
+                self.assertEqual(sent_json(calls[0])["max_tokens"], 512 + room)
+
+    def test_each_rung_of_the_ladder_thinks_longer_than_the_one_below(self):
+        rungs = [api.THINKING_ROOM[name] for name in
+                 ("minimal", "low", "medium", "high", "xhigh", "max")]
+        self.assertEqual(rungs, sorted(rungs))
+        self.assertEqual(len(set(rungs)), len(rungs))
+
+    def test_the_models_own_default_is_given_room_to_think_in_too(self):
+        # Nothing is sent, so a template that thinks will think, and the ceiling
+        # has to survive that as well.
+        self.conf["local_llm_reasoning"] = ""
+        with fake_urlopen(chat_reply("Done.")) as calls:
+            cleanup.run("uh, done", self.conf, "the rules")
+        self.assertEqual(sent_json(calls[0])["max_tokens"],
+                         512 + api.DEFAULT_THINKING_ROOM)
+
+    def test_the_ceiling_stays_under_the_context_the_server_was_started_with(self):
+        # Above the context there is no ceiling at all: the runaway would run to
+        # the end of the context instead of stopping where this says.
+        self.patch_attr(ggml, "llm", FakeServer(context=2048))
+        self.conf["local_llm_reasoning"] = "max"
+        with fake_urlopen(chat_reply("Done.")) as calls:
+            cleanup.run("uh, done", self.conf, "the rules")
+        self.assertLess(sent_json(calls[0])["max_tokens"], 2048)
+
+    def test_the_prompt_keeps_its_share_of_a_small_context(self):
+        self.patch_attr(ggml, "llm", FakeServer(context=2048))
+        self.conf["local_llm_reasoning"] = "max"
+        with fake_urlopen(chat_reply("Done.")) as calls:
+            cleanup.run("x" * 2000, self.conf, "the rules")
+        # 2048 less half the characters of prompt and transcript together.
+        self.assertEqual(sent_json(calls[0])["max_tokens"],
+                         2048 - (len("the rules") + 2000) // 2)
 
     def test_a_reply_that_was_all_thinking_names_the_setting_that_fixes_it(self):
         reply = {"choices": [{"message": {"content": "", "reasoning": "hmm"}}]}
