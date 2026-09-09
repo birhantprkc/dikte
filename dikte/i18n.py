@@ -804,6 +804,19 @@ TR = {
         "deneyin.",
     "Local whisper": "Yerel whisper",
     "Local model": "Yerel model",
+    "Not loaded.": "Yüklü değil.",
+    "Loaded; it did not say what it is running on.":
+        "Yüklendi; neyin üzerinde çalıştığını söylemedi.",
+    "Loaded on the graphics card ({detail}).":
+        "Ekran kartına yüklendi ({detail}).",
+    "Loaded on the processor ({detail}).": "İşlemciye yüklendi ({detail}).",
+    "Loaded on the processor: only the CPU backend was loaded. Check the "
+    "server log for graphics backend or driver errors.":
+        "İşlemciye yüklendi: yalnızca CPU arka ucu yüklendi. Ekran kartı arka "
+        "ucu veya sürücü hataları için sunucu günlüğünü kontrol edin.",
+    "Loaded on the processor: the graphics card is switched on, but could not "
+    "be used.":
+        "İşlemciye yüklendi: ekran kartı açık, ama kullanılamadı.",
     "Not installed.": "Kurulu değil.",
     "Installed on the system: {path}": "Sistemde kurulu: {path}",
     "Using custom build: {path}": "Özel derleme kullanılıyor: {path}",
