@@ -819,6 +819,7 @@ TR = {
         "İşlemciye yüklendi: ekran kartı açık, ama kullanılamadı.",
     "Not installed.": "Kurulu değil.",
     "Installed on the system: {path}": "Sistemde kurulu: {path}",
+    "Using custom build: {path}": "Özel derleme kullanılıyor: {path}",
     "Download again": "Yeniden indir",
     "Downloaded, version {version}.": "İndirildi, sürüm {version}.",
     "Downloaded, version {version}. There was no Vulkan build, "

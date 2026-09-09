@@ -16,7 +16,7 @@ from unittest import mock
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QHideEvent, QShowEvent, QWheelEvent
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QComboBox, QMessageBox, QSpinBox, QWidget
 
 from dikte import audio
 from dikte import cleanup
@@ -229,6 +229,51 @@ class Settings(DikteTest):
         box.setFocus()
         QApplication.sendEvent(box, self.wheel())
         self.assertNotEqual(box.currentIndex(), before)
+
+    def test_the_wheel_uses_remembered_focus_in_an_inactive_window(self):
+        # Keep the window hidden so no desktop activation policy can give it
+        # keyboard focus. Its remembered focus still selects the wheel target.
+        for widget_type in (QComboBox, QSpinBox):
+            with self.subTest(widget=widget_type.__name__):
+                window = QWidget()
+                self.addCleanup(window.deleteLater)
+                box = widget_type(window)
+                other = QComboBox(window)
+                if isinstance(box, QComboBox):
+                    box.addItems(["first", "second", "third"])
+                    box.setCurrentIndex(1)
+                    value = box.currentIndex
+                else:
+                    box.setValue(5)
+                    value = box.value
+                box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                guard = settings_ui.WheelGuard(window)
+                box.installEventFilter(guard)
+                box.setFocus()
+                self.assertFalse(window.isActiveWindow())
+                self.assertFalse(box.hasFocus())
+                self.assertIs(window.focusWidget(), box)
+                before = value()
+                QApplication.sendEvent(box, self.wheel())
+                self.assertNotEqual(value(), before)
+                other.setFocus()
+                self.assertIs(window.focusWidget(), other)
+                before = value()
+                rolled = self.wheel()
+                QApplication.sendEvent(box, rolled)
+                self.assertEqual(value(), before)
+                self.assertFalse(rolled.isAccepted())
+
+    def test_the_wheel_is_refused_when_another_widget_has_focus(self):
+        window = self.window(cfg.Config())
+        box = window.ui_language
+        other = window.corner
+        other.setFocus()
+        before = box.currentIndex()
+        rolled = self.wheel()
+        QApplication.sendEvent(box, rolled)
+        self.assertEqual(box.currentIndex(), before)
+        self.assertFalse(rolled.isAccepted())
 
     def test_a_wrapped_label_keeps_the_room_its_lines_need(self):
         # The program path shares a row with a button, and a row is measured
@@ -1577,6 +1622,29 @@ class LocalModels(DikteTest):
         self.assertFalse(ggml.program_path(ggml.WHISPER))
         self.assertNotIn("Ready", box.status.text())
         self.assertIn("program", box.status.text())
+
+    def test_a_program_set_in_the_settings_is_not_called_downloaded(self):
+        mine = self.path("my-whisper-server")
+        mine.write_text("#!/bin/sh\n")
+        mine.chmod(0o755)
+        self.patch_attr(ggml.shutil, "which", lambda name: None)
+        box = self.window(self.config(local_binary=str(mine))).local_whisper
+        self.assertIn(str(mine), box.program_label.text())
+        self.assertFalse(box.install_button.isVisibleTo(box))
+
+    def test_a_model_over_a_program_set_by_hand_is_ready(self):
+        # The program is there, it is just named by the settings rather than
+        # downloaded, and the status line looked past it.
+        mine = self.path("my-whisper-server")
+        mine.write_text("#!/bin/sh\n")
+        mine.chmod(0o755)
+        self.patch_attr(ggml.shutil, "which", lambda name: None)
+        path = ggml.whisper_model_path("ggml-small.bin")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not really a model")
+        box = self.window(self.config(local_binary=str(mine))).local_whisper
+        box.load("ggml-small.bin")
+        self.assertIn("Ready", box.status.text())
 
     def test_changing_the_publisher_changes_the_model(self):
         # The model chosen under the old publisher is not published by the new
