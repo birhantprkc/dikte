@@ -50,6 +50,7 @@ QPushButton:focus, QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus,
 QListWidget:focus { border: 2px solid @accent; }
 QPushButton:disabled { color: @disabled_text; background: @disabled_bg; }
 QPushButton#primary { background: @accent; color: @accent_text; font-weight: 600; }
+QPushButton#primary:disabled { background: @disabled_bg; color: @disabled_text; border-color: @border; }
 QPushButton#capture {
     background: @accent; color: @accent_text; border: 6px solid @surface;
     border-radius: 56px; padding: 0;
@@ -108,6 +109,7 @@ QToolTip { background: @surface; color: @text; border: 1px solid @accent; }
 QScrollBar:vertical { background: @base; width: 12px; }
 QScrollBar::handle:vertical { background: @border; min-height: 24px; border-radius: 6px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: @base; }
 """
 
 
